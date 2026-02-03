@@ -1,0 +1,28 @@
+[project]
+name = "kaggle-comp"
+version = "0.1.0"
+description = "ByT5 Akkadian-to-English translation for Kaggle competition"
+requires-python = ">=3.12"
+dependencies = [
+    "numpy",
+    "pandas",
+    "torch",
+    "transformers",
+    "tqdm",
+    "optimum",
+    "kaggle",
+]
+
+[project.optional-dependencies]
+dev = [
+    "ruff",
+]
+
+[tool.ruff]
+line-length = 144
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W"]
+ignore = ["E501"]
+
+[tool.ruff.format]

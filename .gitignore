@@ -1,0 +1,47 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Project outputs
+output/
+*.log
+
+# Data & models (large files)
+*.csv
+*.zip
+*.tar.gz
+*.pt
+*.bin
+*.safetensors
+data/
+models/
+
+# Kaggle
+kaggle.json
+
+# Secrets
+.env
+*.key
