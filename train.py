@@ -55,9 +55,10 @@ class TrainConfig:
     max_target_length: int = 512
     val_split: float = 0.1
 
-    # Generation (for validation) - use greedy for speed, beam search only for final eval
+    # Generation (for validation)
     num_beams: int = 1
-    max_new_tokens: int = 512
+    max_new_tokens: int = 256  # Max tokens for validation generation (256 is faster, 512 for final eval)
+    use_adaptive_beams: bool = True  # Use fewer beams for short sequences
 
     # Misc
     seed: int = 42
@@ -65,6 +66,7 @@ class TrainConfig:
     eval_every: int = 1
     num_workers: int = 4  # Parallel data loading
     use_amp: bool = True  # Use automatic mixed precision (BF16 on CUDA, disabled elsewhere)
+    use_better_transformer: bool = False  # Use optimum BetterTransformer for faster inference
 
     # Device
     device: torch.device = field(init=False)
@@ -142,6 +144,21 @@ class AkkadianDataset(Dataset):
         }
 
 
+def get_adaptive_beam_size(attention_mask: torch.Tensor, base_beams: int, use_adaptive: bool = True) -> int:
+    """Use fewer beams for shorter sequences to speed up generation."""
+    if not use_adaptive or base_beams <= 2:
+        return base_beams
+
+    # Compute max length in batch
+    lengths = attention_mask.sum(dim=1)
+    max_len = int(lengths.max().item())
+
+    # Short sequences (<100 tokens): use fewer beams
+    if max_len < 100:
+        return max(2, base_beams // 2)
+    return base_beams
+
+
 def compute_metrics(predictions: list[str], references: list[str]) -> dict:
     """Compute competition metric: geometric mean of BLEU and chrF++."""
     bleu = load_metric("sacrebleu")
@@ -180,12 +197,16 @@ def evaluate(model, tokenizer, val_loader, config: TrainConfig) -> dict:
             input_ids = batch["input_ids"].to(config.device)
             attention_mask = batch["attention_mask"].to(config.device)
 
+            # Use adaptive beam sizing for speed
+            num_beams = get_adaptive_beam_size(attention_mask, config.num_beams, config.use_adaptive_beams)
+
             outputs = model.generate(
                 input_ids=input_ids,
                 attention_mask=attention_mask,
                 max_new_tokens=config.max_new_tokens,
-                num_beams=config.num_beams,
+                num_beams=num_beams,
                 early_stopping=True,
+                use_cache=True,
             )
 
             preds = tokenizer.batch_decode(outputs, skip_special_tokens=True)
@@ -236,6 +257,19 @@ def train(config: TrainConfig):
 
     num_params = sum(p.numel() for p in model.parameters())
     logger.info(f"Model parameters: {num_params:,}")
+
+    # Apply BetterTransformer for faster inference (optional)
+    if config.use_better_transformer and config.device_type == "cuda":
+        try:
+            from optimum.bettertransformer import BetterTransformer
+
+            logger.info("Applying BetterTransformer...")
+            model = BetterTransformer.transform(model)
+            logger.info("BetterTransformer applied (20-50% inference speedup)")
+        except ImportError:
+            logger.warning("'optimum' not installed, skipping BetterTransformer. Install with: pip install optimum")
+        except Exception as exc:
+            logger.warning(f"BetterTransformer failed: {exc}")
 
     # Compile model for faster training (PyTorch 2.0+)
     if hasattr(torch, "compile") and config.device_type == "cuda":
