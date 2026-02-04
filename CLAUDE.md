@@ -39,6 +39,8 @@ Update `docs/NOTES.md` whenever significant state changes occur (experiment comp
 
 ## Experiment Log Schema
 
+**IMPORTANT**: After every experiment completes, log results to `experiments/log.jsonl` before doing anything else. This is critical for tracking progress and avoiding duplicate work.
+
 All experiments logged to `experiments/log.jsonl` (append-only, one JSON object per line):
 
 ```json
