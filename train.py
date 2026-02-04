@@ -18,7 +18,6 @@ import torch
 # Evaluation metrics
 from evaluate import load as load_metric
 from torch.utils.data import DataLoader, Dataset
-from tqdm.auto import tqdm
 from transformers import (
     AutoModelForSeq2SeqLM,
     AutoTokenizer,
@@ -177,7 +176,7 @@ def evaluate(model, tokenizer, val_loader, config: TrainConfig) -> dict:
     references = []
 
     with torch.no_grad():
-        for batch in tqdm(val_loader, desc="Evaluating"):
+        for batch in val_loader:
             input_ids = batch["input_ids"].to(config.device)
             attention_mask = batch["attention_mask"].to(config.device)
 
@@ -298,8 +297,7 @@ def train(config: TrainConfig):
         epoch_loss = 0.0
         optimizer.zero_grad()
 
-        pbar = tqdm(train_loader, desc=f"Epoch {epoch + 1}/{config.epochs}")
-        for step, batch in enumerate(pbar):
+        for step, batch in enumerate(train_loader):
             input_ids = batch["input_ids"].to(config.device)
             attention_mask = batch["attention_mask"].to(config.device)
             labels = batch["labels"].to(config.device)
@@ -326,8 +324,6 @@ def train(config: TrainConfig):
                 scheduler.step()
                 optimizer.zero_grad()
                 global_step += 1
-
-            pbar.set_postfix({"loss": f"{loss.item() * config.gradient_accumulation_steps:.4f}"})
 
         avg_loss = epoch_loss / len(train_loader)
         history["train_loss"].append(avg_loss)
