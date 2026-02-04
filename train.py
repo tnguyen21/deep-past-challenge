@@ -61,24 +61,29 @@ class TrainConfig:
     save_every: int = 1
     eval_every: int = 1
     num_workers: int = 0
-    fp16: bool = True
+    use_amp: bool = True  # Use automatic mixed precision (BF16 on CUDA, disabled elsewhere)
 
     # Device
     device: torch.device = field(init=False)
     device_type: str = field(init=False)
+    amp_dtype: torch.dtype = field(init=False)
 
     def __post_init__(self):
         if torch.cuda.is_available():
             self.device = torch.device("cuda")
             self.device_type = "cuda"
+            # Use BF16 for better numerical stability with transformers
+            self.amp_dtype = torch.bfloat16 if self.use_amp else torch.float32
         elif torch.backends.mps.is_available():
             self.device = torch.device("mps")
             self.device_type = "mps"
-            self.fp16 = False  # MPS doesn't support fp16 well
+            self.use_amp = False
+            self.amp_dtype = torch.float32
         else:
             self.device = torch.device("cpu")
             self.device_type = "cpu"
-            self.fp16 = False
+            self.use_amp = False
+            self.amp_dtype = torch.float32
 
         if not self.experiment_name:
             self.experiment_name = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -203,6 +208,7 @@ def train(config: TrainConfig):
     logger.info(f"Starting experiment: {config.experiment_name}")
     logger.info(f"Device: {config.device} ({config.device_type})")
     logger.info(f"Model: {config.model_name}")
+    logger.info(f"AMP: {config.use_amp}, dtype: {config.amp_dtype}")
 
     # Set seed
     torch.manual_seed(config.seed)
@@ -259,8 +265,9 @@ def train(config: TrainConfig):
 
     scheduler = get_linear_schedule_with_warmup(optimizer, warmup_steps, total_steps)
 
-    # Mixed precision
-    scaler = torch.amp.GradScaler(enabled=config.fp16 and config.device_type == "cuda")
+    # Mixed precision (BF16 doesn't need GradScaler)
+    use_scaler = config.use_amp and config.amp_dtype == torch.float16
+    scaler = torch.amp.GradScaler(enabled=use_scaler)
 
     # Training history
     history = {
@@ -290,18 +297,25 @@ def train(config: TrainConfig):
             attention_mask = batch["attention_mask"].to(config.device)
             labels = batch["labels"].to(config.device)
 
-            with torch.amp.autocast(device_type=config.device_type, enabled=config.fp16):
+            with torch.amp.autocast(device_type=config.device_type, dtype=config.amp_dtype, enabled=config.use_amp):
                 outputs = model(input_ids=input_ids, attention_mask=attention_mask, labels=labels)
                 loss = outputs.loss / config.gradient_accumulation_steps
 
-            scaler.scale(loss).backward()
+            if use_scaler:
+                scaler.scale(loss).backward()
+            else:
+                loss.backward()
             epoch_loss += loss.item() * config.gradient_accumulation_steps
 
             if (step + 1) % config.gradient_accumulation_steps == 0:
-                scaler.unscale_(optimizer)
-                torch.nn.utils.clip_grad_norm_(model.parameters(), config.max_grad_norm)
-                scaler.step(optimizer)
-                scaler.update()
+                if use_scaler:
+                    scaler.unscale_(optimizer)
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), config.max_grad_norm)
+                    scaler.step(optimizer)
+                    scaler.update()
+                else:
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), config.max_grad_norm)
+                    optimizer.step()
                 scheduler.step()
                 optimizer.zero_grad()
                 global_step += 1
@@ -369,7 +383,7 @@ def parse_args():
     parser.add_argument("--num-beams", type=int, default=4)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--num-workers", type=int, default=0)
-    parser.add_argument("--no-fp16", action="store_true")
+    parser.add_argument("--no-amp", action="store_true", help="Disable automatic mixed precision")
 
     return parser.parse_args()
 
@@ -394,7 +408,7 @@ def main():
         num_beams=args.num_beams,
         seed=args.seed,
         num_workers=args.num_workers,
-        fp16=not args.no_fp16,
+        use_amp=not args.no_amp,
     )
 
     train(config)
