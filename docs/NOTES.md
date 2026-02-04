@@ -137,3 +137,49 @@ Downloaded and analyzed top competitor's model from Kaggle: `llkh0a/byt5-akkadia
 ```
 /home/ubuntu/.cache/kagglehub/datasets/llkh0a/byt5-akkadian-model/versions/1/
 ```
+
+---
+
+## 2026-02-04: Overnight Experiment Setup
+
+### byt5-large-regularized FAILED
+- **GeomMean**: 0.55 (BLEU 0.11, chrF++ 2.80) - WORSE than baseline!
+- Loss plateaued at ~5.6 (never decreased from initial)
+- Likely cause: Label smoothing + higher LR caused training instability
+- **DO NOT MERGE** this branch
+
+### Overnight Experiment Plan (10 experiments, all using byt5-base for speed)
+
+All experiment branches pushed and ready:
+1. `exp/sentence-level-data` - Split docs into sentences (RUNNING NOW)
+2. `exp/cosine-lr` - Cosine annealing LR schedule
+3. `exp/adafactor` - Adafactor optimizer
+4. `exp/larger-batch` - Effective batch 128 with higher LR
+5. `exp/layer-freeze` - Freeze N encoder layers
+6. `exp/muon` - Muon optimizer
+7. `exp/lexicon-augment` - Add dictionary entries to training data
+8. `exp/early-stopping` - Early stopping with patience
+9. `exp/warmup-sweep` - Try warmup_ratio 0.05, 0.2
+10. `exp/label-smoothing-sweep` - Try label_smoothing 0.1, 0.3
+
+### Current Running Experiment
+- **Name**: sentence_level_data
+- **Branch**: exp/sentence-level-data
+- **Data**: 6,220 sentence pairs (4x expansion from 1,561 docs)
+- **Model**: byt5-base, 30 epochs
+- **Progress**: Epoch 4 complete, loss decreasing (5.35 → 3.97 → 3.31 → 2.85)
+- **Log**: `train_sentence_level.log` on VM
+
+### Scripts Created
+- `scripts/prepare_sentence_data.py` - Split docs into sentence pairs
+- `scripts/prepare_lexicon_data.py` - Mix dictionary entries with training data
+
+### Execution Order
+After each experiment completes:
+1. Log results to `experiments/log.jsonl`
+2. Create PR with metrics
+3. Start next experiment on VM
+
+### VM Status
+- Connected to A100 40GB at `ubuntu@161.118.191.241`
+- Sentence-level training running: `train_sentence_level.log`
