@@ -41,17 +41,18 @@ class TrainConfig:
     # Paths
     train_data: str = "data/train.csv"
     val_data: Optional[str] = None
-    model_name: str = "google/byt5-small"
+    model_name: str = "google/byt5-large"  # Larger model for better performance
     output_dir: str = "checkpoints"
     experiment_name: str = ""
 
     # Training
-    epochs: int = 30  # 30 epochs for better convergence (loss still decreasing at 10)
-    batch_size: int = 8
-    gradient_accumulation_steps: int = 4
-    learning_rate: float = 5e-5
+    epochs: int = 20  # Fewer epochs needed with larger model + regularization
+    batch_size: int = 2  # Smaller batch for byt5-large memory
+    gradient_accumulation_steps: int = 16  # Effective batch = 32
+    learning_rate: float = 1e-4  # Higher LR with larger batch (competitor used 1e-4)
     warmup_ratio: float = 0.1
-    weight_decay: float = 0.01
+    weight_decay: float = 0.01  # Regularization
+    label_smoothing: float = 0.2  # Regularization (competitor used 0.2)
     max_grad_norm: float = 1.0
 
     # Data
@@ -147,6 +148,49 @@ class AkkadianDataset(Dataset):
             "attention_mask": self.attention_mask[idx],
             "labels": self.labels[idx],
         }
+
+
+def label_smoothed_nll_loss(logits: torch.Tensor, labels: torch.Tensor, smoothing: float = 0.0, ignore_index: int = -100) -> torch.Tensor:
+    """Compute cross-entropy loss with label smoothing.
+
+    Args:
+        logits: (batch, seq_len, vocab_size)
+        labels: (batch, seq_len)
+        smoothing: Label smoothing factor (0.0 = no smoothing)
+        ignore_index: Index to ignore in loss computation
+    """
+    vocab_size = logits.size(-1)
+
+    # Flatten for cross-entropy
+    logits_flat = logits.view(-1, vocab_size)
+    labels_flat = labels.view(-1)
+
+    # Create mask for valid positions
+    mask = labels_flat != ignore_index
+
+    if smoothing > 0:
+        # Compute log probabilities
+        log_probs = torch.nn.functional.log_softmax(logits_flat, dim=-1)
+
+        # One-hot encode labels (with smoothing)
+        with torch.no_grad():
+            smooth_labels = torch.zeros_like(log_probs)
+            smooth_labels.fill_(smoothing / (vocab_size - 1))
+            # Set the correct label positions
+            valid_labels = labels_flat.clone()
+            valid_labels[~mask] = 0  # Temporarily set invalid to 0 for scatter
+            smooth_labels.scatter_(1, valid_labels.unsqueeze(1), 1.0 - smoothing)
+
+        # Compute smoothed loss
+        loss = (-smooth_labels * log_probs).sum(dim=-1)
+
+        # Apply mask and compute mean
+        loss = (loss * mask.float()).sum() / mask.float().sum()
+    else:
+        # Standard cross-entropy
+        loss = torch.nn.functional.cross_entropy(logits_flat, labels_flat, ignore_index=ignore_index)
+
+    return loss
 
 
 def get_adaptive_beam_size(attention_mask: torch.Tensor, base_beams: int, use_adaptive: bool = True) -> int:
@@ -332,6 +376,8 @@ def train(config: TrainConfig):
             "batch_size": config.batch_size,
             "learning_rate": config.learning_rate,
             "gradient_accumulation_steps": config.gradient_accumulation_steps,
+            "weight_decay": config.weight_decay,
+            "label_smoothing": config.label_smoothing,
         },
         "train_loss": [],
         "val_metrics": [],
@@ -353,7 +399,12 @@ def train(config: TrainConfig):
 
             with torch.amp.autocast(device_type=config.device_type, dtype=config.amp_dtype, enabled=config.use_amp):
                 outputs = model(input_ids=input_ids, attention_mask=attention_mask, labels=labels)
-                loss = outputs.loss / config.gradient_accumulation_steps
+                # Use label smoothing if configured
+                if config.label_smoothing > 0:
+                    loss = label_smoothed_nll_loss(outputs.logits, labels, config.label_smoothing)
+                else:
+                    loss = outputs.loss
+                loss = loss / config.gradient_accumulation_steps
 
             if use_scaler:
                 scaler.scale(loss).backward()
@@ -419,15 +470,17 @@ def parse_args():
 
     parser.add_argument("--train-data", type=str, default="data/train.csv")
     parser.add_argument("--val-data", type=str, default=None)
-    parser.add_argument("--model", type=str, default="google/byt5-small")
+    parser.add_argument("--model", type=str, default="google/byt5-large")
     parser.add_argument("--output-dir", type=str, default="checkpoints")
     parser.add_argument("--experiment-name", type=str, default="")
 
-    parser.add_argument("--epochs", type=int, default=30)
-    parser.add_argument("--batch-size", type=int, default=8)
-    parser.add_argument("--grad-accum", type=int, default=4)
-    parser.add_argument("--lr", type=float, default=5e-5)
+    parser.add_argument("--epochs", type=int, default=20)
+    parser.add_argument("--batch-size", type=int, default=2)
+    parser.add_argument("--grad-accum", type=int, default=16)
+    parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--warmup-ratio", type=float, default=0.1)
+    parser.add_argument("--weight-decay", type=float, default=0.01)
+    parser.add_argument("--label-smoothing", type=float, default=0.2)
 
     parser.add_argument("--max-source-length", type=int, default=512)
     parser.add_argument("--max-target-length", type=int, default=512)
@@ -457,6 +510,8 @@ def main():
         gradient_accumulation_steps=args.grad_accum,
         learning_rate=args.lr,
         warmup_ratio=args.warmup_ratio,
+        weight_decay=args.weight_decay,
+        label_smoothing=args.label_smoothing,
         max_source_length=args.max_source_length,
         max_target_length=args.max_target_length,
         val_split=args.val_split,
