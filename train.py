@@ -25,6 +25,7 @@ from torch.utils.data import DataLoader, Dataset
 from transformers import (
     AutoModelForSeq2SeqLM,
     AutoTokenizer,
+    get_cosine_schedule_with_warmup,
     get_linear_schedule_with_warmup,
 )
 
@@ -51,6 +52,7 @@ class TrainConfig:
     gradient_accumulation_steps: int = 4
     learning_rate: float = 5e-5
     warmup_ratio: float = 0.1
+    lr_schedule: str = "linear"  # "linear" or "cosine"
     weight_decay: float = 0.01
     max_grad_norm: float = 1.0
 
@@ -318,7 +320,12 @@ def train(config: TrainConfig):
     total_steps = len(train_loader) * config.epochs // config.gradient_accumulation_steps
     warmup_steps = int(total_steps * config.warmup_ratio)
 
-    scheduler = get_linear_schedule_with_warmup(optimizer, warmup_steps, total_steps)
+    if config.lr_schedule == "cosine":
+        scheduler = get_cosine_schedule_with_warmup(optimizer, warmup_steps, total_steps)
+        logger.info(f"Using cosine LR schedule with {warmup_steps} warmup steps")
+    else:
+        scheduler = get_linear_schedule_with_warmup(optimizer, warmup_steps, total_steps)
+        logger.info(f"Using linear LR schedule with {warmup_steps} warmup steps")
 
     # Mixed precision (BF16 doesn't need GradScaler)
     use_scaler = config.use_amp and config.amp_dtype == torch.float16
@@ -428,6 +435,7 @@ def parse_args():
     parser.add_argument("--grad-accum", type=int, default=4)
     parser.add_argument("--lr", type=float, default=5e-5)
     parser.add_argument("--warmup-ratio", type=float, default=0.1)
+    parser.add_argument("--lr-schedule", type=str, default="linear", choices=["linear", "cosine"], help="LR schedule type")
 
     parser.add_argument("--max-source-length", type=int, default=512)
     parser.add_argument("--max-target-length", type=int, default=512)
@@ -457,6 +465,7 @@ def main():
         gradient_accumulation_steps=args.grad_accum,
         learning_rate=args.lr,
         warmup_ratio=args.warmup_ratio,
+        lr_schedule=args.lr_schedule,
         max_source_length=args.max_source_length,
         max_target_length=args.max_target_length,
         val_split=args.val_split,
