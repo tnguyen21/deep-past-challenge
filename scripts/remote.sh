@@ -18,7 +18,7 @@ case "$1" in
     setup)
         echo "Setting up remote environment..."
         ssh "$REMOTE" "git clone https://github.com/YOUR_USER/kaggle-comp.git $REMOTE_DIR 2>/dev/null || (cd $REMOTE_DIR && git pull)"
-        ssh "$REMOTE" "cd $REMOTE_DIR && bash setup_gpu.sh"
+        ssh "$REMOTE" "cd $REMOTE_DIR && bash scripts/setup_gpu.sh"
         ;;
     sync)
         echo "Syncing code to remote..."
@@ -36,7 +36,7 @@ case "$1" in
         ;;
     status)
         echo "Checking remote status..."
-        ssh "$REMOTE" "cd $REMOTE_DIR && source .venv/bin/activate && python status.py"
+        ssh "$REMOTE" "cd $REMOTE_DIR && source .venv/bin/activate && python experiments/status.py"
         ;;
     tail)
         echo "Tailing training output..."
@@ -58,7 +58,7 @@ case "$1" in
         echo "Commands:"
         echo "  setup   - Clone repo and install dependencies"
         echo "  sync    - Sync local code to remote"
-        echo "  run     - Run a command on remote (e.g., ./remote.sh run ./run_experiment.sh baseline)"
+        echo "  run     - Run a command on remote (e.g., ./scripts/remote.sh run ./scripts/run_experiment.sh baseline)"
         echo "  logs    - Fetch experiment logs"
         echo "  status  - Show experiment status"
         echo "  tail    - Tail training output"

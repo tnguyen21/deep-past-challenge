@@ -3,7 +3,7 @@
 ## Session Start Protocol
 
 When starting a new session or after context reset:
-1. Read `NOTES.md` for context from previous sessions
+1. Read `docs/NOTES.md` for context from previous sessions
 2. Read `experiments/log.jsonl` to understand what's been tried
 3. Summarize last 3-5 experiments (metrics, what worked/didn't)
 4. Check current branch state: `git status`, `git branch`
@@ -12,14 +12,14 @@ When starting a new session or after context reset:
 
 ## Cross-Instance Notes
 
-Use `NOTES.md` to document information that should persist across Claude instances:
+Use `docs/NOTES.md` to document information that should persist across Claude instances:
 - Current VM connection details and status
 - In-progress experiments and their task IDs
 - Bugs encountered and fixes applied
 - Observations about the data or model behavior
 - Next steps and hypotheses to test
 
-Update NOTES.md whenever significant state changes occur (experiment completes, bug found, new insight).
+Update `docs/NOTES.md` whenever significant state changes occur (experiment completes, bug found, new insight).
 
 ## Git Workflow
 
@@ -102,27 +102,32 @@ All experiments logged to `experiments/log.jsonl` (append-only, one JSON object 
 kaggle-comp/
 ├── train.py              # Training script
 ├── byt_ensemble.py       # Inference script
-├── status.py             # Experiment status/suggestions
-├── run_experiment.sh     # Experiment runner
-├── setup_gpu.sh          # VM setup
-├── remote.sh             # Remote execution helper
-├── NOTES.md              # Cross-instance session notes
+├── pyproject.toml        # Project config
 ├── uv.lock               # Dependency lockfile (committed)
+├── CLAUDE.md             # Claude instructions
+├── scripts/
+│   ├── setup_gpu.sh      # VM setup
+│   ├── remote.sh         # Remote execution helper
+│   └── run_experiment.sh # Experiment runner
+├── docs/
+│   ├── NOTES.md          # Cross-instance session notes
+│   └── DATA.md           # Competition data documentation
+├── experiments/
+│   ├── log.jsonl         # Experiment log (append-only)
+│   └── status.py         # Experiment status/suggestions
 ├── data/                 # Competition data (gitignored)
 ├── checkpoints/          # Model checkpoints (gitignored)
-├── experiments/
-│   └── log.jsonl         # Experiment log (append-only)
 └── output/               # Inference outputs (gitignored)
 ```
 
 ## Iteration Protocol
 
-1. **Check status**: `python status.py` - review experiments, get suggestions
+1. **Check status**: `python experiments/status.py` - review experiments, get suggestions
 2. **Plan**: Decide what single variable to change next
 3. **Branch**: `git checkout -b exp/<experiment-name>`
 4. **Implement**: Make changes, commit locally
 5. **Deploy**: Push, pull on VM
-6. **Run**: `./run_experiment.sh <name> ...` (one at a time)
+6. **Run**: `./scripts/run_experiment.sh <name> ...` (one at a time)
 7. **Analyze**: Compare metrics to baseline
 8. **Document**: If improved → PR to main. If not → document in commit, leave branch unmerged
 9. **Repeat**
