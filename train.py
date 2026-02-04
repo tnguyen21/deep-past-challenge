@@ -55,8 +55,8 @@ class TrainConfig:
     max_target_length: int = 512
     val_split: float = 0.1
 
-    # Generation (for validation)
-    num_beams: int = 4
+    # Generation (for validation) - use greedy for speed, beam search only for final eval
+    num_beams: int = 1
     max_new_tokens: int = 512
 
     # Misc
