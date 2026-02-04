@@ -11,6 +11,8 @@ dependencies = [
     "tqdm",
     "optimum",
     "kaggle",
+    "evaluate",
+    "sacrebleu",
 ]
 
 [project.optional-dependencies]

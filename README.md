@@ -141,6 +141,15 @@ See [DATA.md](DATA.md) for detailed dataset documentation.
 
 ---
 
+## Modeling Notes
+
+- **ByT5**: Byte-level model, well-suited for morphologically complex languages like Akkadian where a single word can encode multiple meanings
+- **Low-resource**: ~1,500 training examples - data augmentation (back-translation, noise injection) likely important
+- **Train/test mismatch**: Training data is document-level aligned, test data is sentence-level. May need to handle this discrepancy
+- **Preprocessing matters**: Gap markers (`<gap>`, `<big_gap>`), determinatives (`{ki}`, `{d}`), and character normalization (`Ḫ` → `H`) significantly impact tokenization
+
+---
+
 ## Citation
 
 ```

@@ -1,0 +1,404 @@
+#!/usr/bin/env python3
+"""
+ByT5 Fine-tuning Script for Akkadian-to-English Translation
+"""
+
+import argparse
+import json
+import logging
+import re
+from dataclasses import dataclass, field
+from datetime import datetime
+from pathlib import Path
+from typing import Optional
+
+import pandas as pd
+import torch
+
+# Evaluation metrics
+from evaluate import load as load_metric
+from torch.utils.data import DataLoader, Dataset
+from tqdm.auto import tqdm
+from transformers import (
+    AutoModelForSeq2SeqLM,
+    AutoTokenizer,
+    get_linear_schedule_with_warmup,
+)
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class TrainConfig:
+    # Paths
+    train_data: str = "data/train.csv"
+    val_data: Optional[str] = None
+    model_name: str = "google/byt5-small"
+    output_dir: str = "checkpoints"
+    experiment_name: str = ""
+
+    # Training
+    epochs: int = 10
+    batch_size: int = 8
+    gradient_accumulation_steps: int = 4
+    learning_rate: float = 5e-5
+    warmup_ratio: float = 0.1
+    weight_decay: float = 0.01
+    max_grad_norm: float = 1.0
+
+    # Data
+    max_source_length: int = 512
+    max_target_length: int = 512
+    val_split: float = 0.1
+
+    # Generation (for validation)
+    num_beams: int = 4
+    max_new_tokens: int = 512
+
+    # Misc
+    seed: int = 42
+    save_every: int = 1
+    eval_every: int = 1
+    num_workers: int = 0
+    fp16: bool = True
+
+    # Device
+    device: torch.device = field(init=False)
+    device_type: str = field(init=False)
+
+    def __post_init__(self):
+        if torch.cuda.is_available():
+            self.device = torch.device("cuda")
+            self.device_type = "cuda"
+        elif torch.backends.mps.is_available():
+            self.device = torch.device("mps")
+            self.device_type = "mps"
+            self.fp16 = False  # MPS doesn't support fp16 well
+        else:
+            self.device = torch.device("cpu")
+            self.device_type = "cpu"
+            self.fp16 = False
+
+        if not self.experiment_name:
+            self.experiment_name = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+        Path(self.output_dir).mkdir(parents=True, exist_ok=True)
+
+
+class AkkadianDataset(Dataset):
+    def __init__(self, df: pd.DataFrame, tokenizer, max_source_length: int, max_target_length: int):
+        self.tokenizer = tokenizer
+        self.max_source_length = max_source_length
+        self.max_target_length = max_target_length
+
+        # Preprocess
+        self.sources = [self._preprocess_source(t) for t in df["transliteration"].tolist()]
+        self.targets = df["translation"].tolist()
+
+    def _preprocess_source(self, text: str) -> str:
+        if pd.isna(text):
+            return ""
+        text = str(text)
+        # Normalize gaps
+        text = re.sub(r"(\.{3,}|…+|……)", "<big_gap>", text)
+        text = re.sub(r"(xx+|\s+x\s+)", "<gap>", text)
+        return "translate Akkadian to English: " + text
+
+    def __len__(self):
+        return len(self.sources)
+
+    def __getitem__(self, idx):
+        source = self.sources[idx]
+        target = self.targets[idx]
+
+        source_enc = self.tokenizer(
+            source,
+            max_length=self.max_source_length,
+            padding="max_length",
+            truncation=True,
+            return_tensors="pt",
+        )
+
+        target_enc = self.tokenizer(
+            target,
+            max_length=self.max_target_length,
+            padding="max_length",
+            truncation=True,
+            return_tensors="pt",
+        )
+
+        labels = target_enc.input_ids.squeeze()
+        labels[labels == self.tokenizer.pad_token_id] = -100
+
+        return {
+            "input_ids": source_enc.input_ids.squeeze(),
+            "attention_mask": source_enc.attention_mask.squeeze(),
+            "labels": labels,
+        }
+
+
+def compute_metrics(predictions: list[str], references: list[str]) -> dict:
+    """Compute competition metric: geometric mean of BLEU and chrF++."""
+    bleu = load_metric("sacrebleu")
+    chrf = load_metric("chrf")
+
+    # BLEU expects list of references for each prediction
+    refs_for_bleu = [[r] for r in references]
+
+    bleu_result = bleu.compute(predictions=predictions, references=refs_for_bleu)
+    chrf_result = chrf.compute(predictions=predictions, references=references, word_order=2)  # chrF++
+
+    bleu_score = bleu_result["score"]
+    chrf_score = chrf_result["score"]
+
+    # Geometric mean
+    if bleu_score > 0 and chrf_score > 0:
+        geom_mean = (bleu_score * chrf_score) ** 0.5
+    else:
+        geom_mean = 0.0
+
+    return {
+        "bleu": bleu_score,
+        "chrf++": chrf_score,
+        "geom_mean": geom_mean,
+    }
+
+
+def evaluate(model, tokenizer, val_loader, config: TrainConfig) -> dict:
+    """Run evaluation and return metrics."""
+    model.eval()
+    predictions = []
+    references = []
+
+    with torch.no_grad():
+        for batch in tqdm(val_loader, desc="Evaluating"):
+            input_ids = batch["input_ids"].to(config.device)
+            attention_mask = batch["attention_mask"].to(config.device)
+
+            outputs = model.generate(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                max_new_tokens=config.max_new_tokens,
+                num_beams=config.num_beams,
+                early_stopping=True,
+            )
+
+            preds = tokenizer.batch_decode(outputs, skip_special_tokens=True)
+            predictions.extend(preds)
+
+            # Decode references (need to handle -100)
+            labels = batch["labels"].clone()
+            labels[labels == -100] = tokenizer.pad_token_id
+            refs = tokenizer.batch_decode(labels, skip_special_tokens=True)
+            references.extend(refs)
+
+    metrics = compute_metrics(predictions, references)
+    model.train()
+    return metrics
+
+
+def train(config: TrainConfig):
+    """Main training loop."""
+    logger.info(f"Starting experiment: {config.experiment_name}")
+    logger.info(f"Device: {config.device} ({config.device_type})")
+    logger.info(f"Model: {config.model_name}")
+
+    # Set seed
+    torch.manual_seed(config.seed)
+
+    # Load data
+    logger.info(f"Loading data from {config.train_data}")
+    df = pd.read_csv(config.train_data)
+    logger.info(f"Loaded {len(df)} samples")
+
+    # Train/val split
+    if config.val_data:
+        train_df = df
+        val_df = pd.read_csv(config.val_data)
+    else:
+        val_size = int(len(df) * config.val_split)
+        val_df = df.sample(n=val_size, random_state=config.seed)
+        train_df = df.drop(val_df.index)
+
+    logger.info(f"Train: {len(train_df)}, Val: {len(val_df)}")
+
+    # Load tokenizer and model
+    logger.info(f"Loading model: {config.model_name}")
+    tokenizer = AutoTokenizer.from_pretrained(config.model_name)
+    model = AutoModelForSeq2SeqLM.from_pretrained(config.model_name)
+    model = model.to(config.device)
+
+    num_params = sum(p.numel() for p in model.parameters())
+    logger.info(f"Model parameters: {num_params:,}")
+
+    # Create datasets
+    train_dataset = AkkadianDataset(train_df, tokenizer, config.max_source_length, config.max_target_length)
+    val_dataset = AkkadianDataset(val_df, tokenizer, config.max_source_length, config.max_target_length)
+
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=config.batch_size,
+        shuffle=True,
+        num_workers=config.num_workers,
+        pin_memory=config.device_type == "cuda",
+    )
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=config.batch_size,
+        shuffle=False,
+        num_workers=config.num_workers,
+        pin_memory=config.device_type == "cuda",
+    )
+
+    # Optimizer and scheduler
+    optimizer = torch.optim.AdamW(model.parameters(), lr=config.learning_rate, weight_decay=config.weight_decay)
+
+    total_steps = len(train_loader) * config.epochs // config.gradient_accumulation_steps
+    warmup_steps = int(total_steps * config.warmup_ratio)
+
+    scheduler = get_linear_schedule_with_warmup(optimizer, warmup_steps, total_steps)
+
+    # Mixed precision
+    scaler = torch.amp.GradScaler(enabled=config.fp16 and config.device_type == "cuda")
+
+    # Training history
+    history = {
+        "config": {
+            "model_name": config.model_name,
+            "epochs": config.epochs,
+            "batch_size": config.batch_size,
+            "learning_rate": config.learning_rate,
+            "gradient_accumulation_steps": config.gradient_accumulation_steps,
+        },
+        "train_loss": [],
+        "val_metrics": [],
+    }
+
+    best_geom_mean = 0.0
+    global_step = 0
+
+    # Training loop
+    for epoch in range(config.epochs):
+        model.train()
+        epoch_loss = 0.0
+        optimizer.zero_grad()
+
+        pbar = tqdm(train_loader, desc=f"Epoch {epoch + 1}/{config.epochs}")
+        for step, batch in enumerate(pbar):
+            input_ids = batch["input_ids"].to(config.device)
+            attention_mask = batch["attention_mask"].to(config.device)
+            labels = batch["labels"].to(config.device)
+
+            with torch.amp.autocast(device_type=config.device_type, enabled=config.fp16):
+                outputs = model(input_ids=input_ids, attention_mask=attention_mask, labels=labels)
+                loss = outputs.loss / config.gradient_accumulation_steps
+
+            scaler.scale(loss).backward()
+            epoch_loss += loss.item() * config.gradient_accumulation_steps
+
+            if (step + 1) % config.gradient_accumulation_steps == 0:
+                scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), config.max_grad_norm)
+                scaler.step(optimizer)
+                scaler.update()
+                scheduler.step()
+                optimizer.zero_grad()
+                global_step += 1
+
+            pbar.set_postfix({"loss": f"{loss.item() * config.gradient_accumulation_steps:.4f}"})
+
+        avg_loss = epoch_loss / len(train_loader)
+        history["train_loss"].append(avg_loss)
+        logger.info(f"Epoch {epoch + 1} - Train Loss: {avg_loss:.4f}")
+
+        # Evaluation
+        if (epoch + 1) % config.eval_every == 0:
+            metrics = evaluate(model, tokenizer, val_loader, config)
+            history["val_metrics"].append({"epoch": epoch + 1, **metrics})
+            logger.info(
+                f"Epoch {epoch + 1} - Val BLEU: {metrics['bleu']:.2f}, chrF++: {metrics['chrf++']:.2f}, GeomMean: {metrics['geom_mean']:.2f}"
+            )
+
+            # Save best model
+            if metrics["geom_mean"] > best_geom_mean:
+                best_geom_mean = metrics["geom_mean"]
+                best_path = Path(config.output_dir) / config.experiment_name / "best"
+                best_path.mkdir(parents=True, exist_ok=True)
+                model.save_pretrained(best_path)
+                tokenizer.save_pretrained(best_path)
+                logger.info(f"New best model saved! GeomMean: {best_geom_mean:.2f}")
+
+        # Save checkpoint
+        if (epoch + 1) % config.save_every == 0:
+            ckpt_path = Path(config.output_dir) / config.experiment_name / f"epoch_{epoch + 1}"
+            ckpt_path.mkdir(parents=True, exist_ok=True)
+            model.save_pretrained(ckpt_path)
+            tokenizer.save_pretrained(ckpt_path)
+
+    # Save history
+    history_path = Path(config.output_dir) / config.experiment_name / "history.json"
+    with open(history_path, "w") as f:
+        json.dump(history, f, indent=2)
+
+    logger.info(f"Training complete! Best GeomMean: {best_geom_mean:.2f}")
+    logger.info(f"Results saved to {config.output_dir}/{config.experiment_name}")
+
+    return history
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="Train ByT5 for Akkadian translation")
+
+    parser.add_argument("--train-data", type=str, default="data/train.csv")
+    parser.add_argument("--val-data", type=str, default=None)
+    parser.add_argument("--model", type=str, default="google/byt5-small")
+    parser.add_argument("--output-dir", type=str, default="checkpoints")
+    parser.add_argument("--experiment-name", type=str, default="")
+
+    parser.add_argument("--epochs", type=int, default=10)
+    parser.add_argument("--batch-size", type=int, default=8)
+    parser.add_argument("--grad-accum", type=int, default=4)
+    parser.add_argument("--lr", type=float, default=5e-5)
+    parser.add_argument("--warmup-ratio", type=float, default=0.1)
+
+    parser.add_argument("--max-source-length", type=int, default=512)
+    parser.add_argument("--max-target-length", type=int, default=512)
+    parser.add_argument("--val-split", type=float, default=0.1)
+
+    parser.add_argument("--num-beams", type=int, default=4)
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--num-workers", type=int, default=0)
+    parser.add_argument("--no-fp16", action="store_true")
+
+    return parser.parse_args()
+
+
+def main():
+    args = parse_args()
+
+    config = TrainConfig(
+        train_data=args.train_data,
+        val_data=args.val_data,
+        model_name=args.model,
+        output_dir=args.output_dir,
+        experiment_name=args.experiment_name,
+        epochs=args.epochs,
+        batch_size=args.batch_size,
+        gradient_accumulation_steps=args.grad_accum,
+        learning_rate=args.lr,
+        warmup_ratio=args.warmup_ratio,
+        max_source_length=args.max_source_length,
+        max_target_length=args.max_target_length,
+        val_split=args.val_split,
+        num_beams=args.num_beams,
+        seed=args.seed,
+        num_workers=args.num_workers,
+        fp16=not args.no_fp16,
+    )
+
+    train(config)
+
+
+if __name__ == "__main__":
+    main()
