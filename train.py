@@ -42,7 +42,7 @@ class TrainConfig:
     experiment_name: str = ""
 
     # Training
-    epochs: int = 10
+    epochs: int = 30  # 30 epochs for better convergence (loss still decreasing at 10)
     batch_size: int = 8
     gradient_accumulation_steps: int = 4
     learning_rate: float = 5e-5
@@ -56,7 +56,7 @@ class TrainConfig:
     val_split: float = 0.1
 
     # Generation (for validation)
-    num_beams: int = 1
+    num_beams: int = 4  # Use beam search for validation to match inference
     max_new_tokens: int = 256  # Max tokens for validation generation (256 is faster, 512 for final eval)
     use_adaptive_beams: bool = True  # Use fewer beams for short sequences
 
@@ -399,7 +399,7 @@ def parse_args():
     parser.add_argument("--output-dir", type=str, default="checkpoints")
     parser.add_argument("--experiment-name", type=str, default="")
 
-    parser.add_argument("--epochs", type=int, default=10)
+    parser.add_argument("--epochs", type=int, default=30)
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--grad-accum", type=int, default=4)
     parser.add_argument("--lr", type=float, default=5e-5)
