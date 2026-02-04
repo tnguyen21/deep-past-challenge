@@ -329,29 +329,21 @@ def train(config: TrainConfig):
         history["train_loss"].append(avg_loss)
         logger.info(f"Epoch {epoch + 1} - Train Loss: {avg_loss:.4f}")
 
-        # Evaluation
-        if (epoch + 1) % config.eval_every == 0:
+        # Only evaluate on final epoch
+        if epoch + 1 == config.epochs:
             metrics = evaluate(model, tokenizer, val_loader, config)
             history["val_metrics"].append({"epoch": epoch + 1, **metrics})
             logger.info(
                 f"Epoch {epoch + 1} - Val BLEU: {metrics['bleu']:.2f}, chrF++: {metrics['chrf++']:.2f}, GeomMean: {metrics['geom_mean']:.2f}"
             )
+            best_geom_mean = metrics["geom_mean"]
 
-            # Save best model
-            if metrics["geom_mean"] > best_geom_mean:
-                best_geom_mean = metrics["geom_mean"]
-                best_path = Path(config.output_dir) / config.experiment_name / "best"
-                best_path.mkdir(parents=True, exist_ok=True)
-                model.save_pretrained(best_path)
-                tokenizer.save_pretrained(best_path)
-                logger.info(f"New best model saved! GeomMean: {best_geom_mean:.2f}")
-
-        # Save checkpoint
-        if (epoch + 1) % config.save_every == 0:
-            ckpt_path = Path(config.output_dir) / config.experiment_name / f"epoch_{epoch + 1}"
-            ckpt_path.mkdir(parents=True, exist_ok=True)
-            model.save_pretrained(ckpt_path)
-            tokenizer.save_pretrained(ckpt_path)
+            # Save final model
+            best_path = Path(config.output_dir) / config.experiment_name / "best"
+            best_path.mkdir(parents=True, exist_ok=True)
+            model.save_pretrained(best_path)
+            tokenizer.save_pretrained(best_path)
+            logger.info(f"Final model saved! GeomMean: {best_geom_mean:.2f}")
 
     # Save history
     history_path = Path(config.output_dir) / config.experiment_name / "history.json"
