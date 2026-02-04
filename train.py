@@ -69,6 +69,7 @@ class TrainConfig:
     seed: int = 42
     save_every: int = 1
     eval_every: int = 0  # Evaluate every N epochs (0 = only final epoch)
+    patience: int = 0  # Early stopping patience (0 = disabled)
     num_workers: int = 4  # Parallel data loading
     use_amp: bool = True  # Use automatic mixed precision (BF16 on CUDA, disabled elsewhere)
     use_better_transformer: bool = False  # Use optimum BetterTransformer for faster inference
@@ -339,6 +340,7 @@ def train(config: TrainConfig):
 
     best_geom_mean = 0.0
     global_step = 0
+    epochs_without_improvement = 0
 
     # Training loop
     for epoch in range(config.epochs):
@@ -394,14 +396,20 @@ def train(config: TrainConfig):
                 f"Epoch {epoch + 1} - Val BLEU: {metrics['bleu']:.2f}, chrF++: {metrics['chrf++']:.2f}, GeomMean: {metrics['geom_mean']:.2f}"
             )
 
-            # Save best model
+            # Save best model and check early stopping
             if metrics["geom_mean"] > best_geom_mean:
                 best_geom_mean = metrics["geom_mean"]
+                epochs_without_improvement = 0
                 best_path = Path(config.output_dir) / config.experiment_name / "best"
                 best_path.mkdir(parents=True, exist_ok=True)
                 model.save_pretrained(best_path)
                 tokenizer.save_pretrained(best_path)
                 logger.info(f"New best model saved! GeomMean: {best_geom_mean:.2f}")
+            else:
+                epochs_without_improvement += 1
+                if config.patience > 0 and epochs_without_improvement >= config.patience:
+                    logger.info(f"Early stopping triggered after {config.patience} epochs without improvement")
+                    break
 
     # Save history
     history_path = Path(config.output_dir) / config.experiment_name / "history.json"
@@ -436,6 +444,7 @@ def parse_args():
     parser.add_argument("--num-beams", type=int, default=1, help="Beam count for intermediate evals (1=greedy)")
     parser.add_argument("--final-num-beams", type=int, default=4, help="Beam count for final epoch eval")
     parser.add_argument("--eval-every", type=int, default=0, help="Evaluate every N epochs (0 = only final)")
+    parser.add_argument("--patience", type=int, default=0, help="Early stopping patience (0 = disabled)")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--num-workers", type=int, default=0)
     parser.add_argument("--no-amp", action="store_true", help="Disable automatic mixed precision")
@@ -463,6 +472,7 @@ def main():
         num_beams=args.num_beams,
         final_num_beams=args.final_num_beams,
         eval_every=args.eval_every,
+        patience=args.patience,
         seed=args.seed,
         num_workers=args.num_workers,
         use_amp=not args.no_amp,
