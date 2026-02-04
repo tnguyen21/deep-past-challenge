@@ -60,7 +60,8 @@ class TrainConfig:
     val_split: float = 0.1
 
     # Generation (for validation)
-    num_beams: int = 4  # Use beam search for validation to match inference
+    num_beams: int = 1  # Use greedy decoding for intermediate evals (fast iteration)
+    final_num_beams: int = 4  # Use beam search only on final epoch for accurate metrics
     max_new_tokens: int = 256  # Max tokens for validation generation (256 is faster, 512 for final eval)
     use_adaptive_beams: bool = True  # Use fewer beams for short sequences
 
@@ -190,11 +191,17 @@ def compute_metrics(predictions: list[str], references: list[str]) -> dict:
     }
 
 
-def evaluate(model, tokenizer, val_loader, config: TrainConfig) -> dict:
-    """Run evaluation and return metrics."""
+def evaluate(model, tokenizer, val_loader, config: TrainConfig, num_beams: int | None = None) -> dict:
+    """Run evaluation and return metrics.
+
+    Args:
+        num_beams: Override beam count. If None, uses config.num_beams.
+    """
     model.eval()
     predictions = []
     references = []
+
+    base_beams = num_beams if num_beams is not None else config.num_beams
 
     with torch.no_grad():
         for batch in val_loader:
@@ -202,7 +209,7 @@ def evaluate(model, tokenizer, val_loader, config: TrainConfig) -> dict:
             attention_mask = batch["attention_mask"].to(config.device)
 
             # Use adaptive beam sizing for speed
-            num_beams = get_adaptive_beam_size(attention_mask, config.num_beams, config.use_adaptive_beams)
+            num_beams = get_adaptive_beam_size(attention_mask, base_beams, config.use_adaptive_beams)
 
             outputs = model.generate(
                 input_ids=input_ids,
@@ -372,8 +379,13 @@ def train(config: TrainConfig):
         should_eval = is_final_epoch or (config.eval_every > 0 and (epoch + 1) % config.eval_every == 0)
 
         if should_eval:
-            metrics = evaluate(model, tokenizer, val_loader, config)
-            history["val_metrics"].append({"epoch": epoch + 1, **metrics})
+            # Use beam search on final epoch for accurate metrics, greedy otherwise for speed
+            eval_beams = config.final_num_beams if is_final_epoch else config.num_beams
+            decode_method = "beam search" if eval_beams > 1 else "greedy"
+            logger.info(f"Evaluating with {decode_method} (num_beams={eval_beams})...")
+
+            metrics = evaluate(model, tokenizer, val_loader, config, num_beams=eval_beams)
+            history["val_metrics"].append({"epoch": epoch + 1, "num_beams": eval_beams, **metrics})
             logger.info(
                 f"Epoch {epoch + 1} - Val BLEU: {metrics['bleu']:.2f}, chrF++: {metrics['chrf++']:.2f}, GeomMean: {metrics['geom_mean']:.2f}"
             )
@@ -417,7 +429,8 @@ def parse_args():
     parser.add_argument("--max-target-length", type=int, default=512)
     parser.add_argument("--val-split", type=float, default=0.1)
 
-    parser.add_argument("--num-beams", type=int, default=4)
+    parser.add_argument("--num-beams", type=int, default=1, help="Beam count for intermediate evals (1=greedy)")
+    parser.add_argument("--final-num-beams", type=int, default=4, help="Beam count for final epoch eval")
     parser.add_argument("--eval-every", type=int, default=5, help="Evaluate every N epochs (0 = only final)")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--num-workers", type=int, default=0)
@@ -444,6 +457,7 @@ def main():
         max_target_length=args.max_target_length,
         val_split=args.val_split,
         num_beams=args.num_beams,
+        final_num_beams=args.final_num_beams,
         eval_every=args.eval_every,
         seed=args.seed,
         num_workers=args.num_workers,
