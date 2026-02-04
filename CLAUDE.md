@@ -3,11 +3,23 @@
 ## Session Start Protocol
 
 When starting a new session or after context reset:
-1. Read `experiments/log.jsonl` to understand what's been tried
-2. Summarize last 3-5 experiments (metrics, what worked/didn't)
-3. Check current branch state: `git status`, `git branch`
-4. Check VM status if connected: `nvidia-smi`, `ps aux | grep python`
-5. Then proceed with next experiment
+1. Read `NOTES.md` for context from previous sessions
+2. Read `experiments/log.jsonl` to understand what's been tried
+3. Summarize last 3-5 experiments (metrics, what worked/didn't)
+4. Check current branch state: `git status`, `git branch`
+5. Check VM status if connected: `nvidia-smi`, `ps aux | grep python`
+6. Then proceed with next experiment
+
+## Cross-Instance Notes
+
+Use `NOTES.md` to document information that should persist across Claude instances:
+- Current VM connection details and status
+- In-progress experiments and their task IDs
+- Bugs encountered and fixes applied
+- Observations about the data or model behavior
+- Next steps and hypotheses to test
+
+Update NOTES.md whenever significant state changes occur (experiment completes, bug found, new insight).
 
 ## Git Workflow
 
@@ -94,6 +106,7 @@ kaggle-comp/
 ├── run_experiment.sh     # Experiment runner
 ├── setup_gpu.sh          # VM setup
 ├── remote.sh             # Remote execution helper
+├── NOTES.md              # Cross-instance session notes
 ├── uv.lock               # Dependency lockfile (committed)
 ├── data/                 # Competition data (gitignored)
 ├── checkpoints/          # Model checkpoints (gitignored)
