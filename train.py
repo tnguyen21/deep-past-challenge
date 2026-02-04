@@ -68,7 +68,7 @@ class TrainConfig:
     # Misc
     seed: int = 42
     save_every: int = 1
-    eval_every: int = 5  # Evaluate every N epochs (0 = only final epoch)
+    eval_every: int = 0  # Evaluate every N epochs (0 = only final epoch)
     num_workers: int = 4  # Parallel data loading
     use_amp: bool = True  # Use automatic mixed precision (BF16 on CUDA, disabled elsewhere)
     use_better_transformer: bool = False  # Use optimum BetterTransformer for faster inference
@@ -435,7 +435,7 @@ def parse_args():
 
     parser.add_argument("--num-beams", type=int, default=1, help="Beam count for intermediate evals (1=greedy)")
     parser.add_argument("--final-num-beams", type=int, default=4, help="Beam count for final epoch eval")
-    parser.add_argument("--eval-every", type=int, default=5, help="Evaluate every N epochs (0 = only final)")
+    parser.add_argument("--eval-every", type=int, default=0, help="Evaluate every N epochs (0 = only final)")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--num-workers", type=int, default=0)
     parser.add_argument("--no-amp", action="store_true", help="Disable automatic mixed precision")
