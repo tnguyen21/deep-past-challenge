@@ -211,14 +211,18 @@ def evaluate(model, tokenizer, val_loader, config: TrainConfig, num_beams: int |
             # Use adaptive beam sizing for speed
             num_beams = get_adaptive_beam_size(attention_mask, base_beams, config.use_adaptive_beams)
 
-            outputs = model.generate(
-                input_ids=input_ids,
-                attention_mask=attention_mask,
-                max_new_tokens=config.max_new_tokens,
-                num_beams=num_beams,
-                early_stopping=True,
-                use_cache=True,
-            )
+            generate_kwargs = {
+                "input_ids": input_ids,
+                "attention_mask": attention_mask,
+                "max_new_tokens": config.max_new_tokens,
+                "num_beams": num_beams,
+                "use_cache": True,
+            }
+            # early_stopping only valid for beam search
+            if num_beams > 1:
+                generate_kwargs["early_stopping"] = True
+
+            outputs = model.generate(**generate_kwargs)
 
             preds = tokenizer.batch_decode(outputs, skip_special_tokens=True)
             predictions.extend(preds)
