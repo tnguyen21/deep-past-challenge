@@ -6,11 +6,15 @@ ByT5 Fine-tuning Script for Akkadian-to-English Translation
 import argparse
 import json
 import logging
+import os
 import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
+
+# Suppress tqdm progress bars from HuggingFace downloads
+os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
 
 import pandas as pd
 import torch
