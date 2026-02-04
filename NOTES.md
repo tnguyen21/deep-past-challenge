@@ -18,6 +18,8 @@ Notes for continuity across Claude instances.
 - **Status**: Running (task ID: b2cf14e)
 - **Config**: byt5-small, 10 epochs, batch_size=8, lr=5e-5, seed=42
 - **Data**: 1405 train, 156 val samples
+- **Progress**: Epoch 1 complete, avg loss 5.49, currently evaluating
+- **Note**: Running in background on VM, check with `tail` on output file
 
 ### Bug Fix Applied
 - Initial run had NaN loss due to FP16 numerical instability with ByT5
@@ -28,6 +30,17 @@ Notes for continuity across Claude instances.
 - train.csv: 1561 rows (transliteration -> translation pairs)
 - test.csv: 4 rows (need to predict translations)
 - Additional resources: OA_Lexicon_eBL.csv, eBL_Dictionary.csv, publications.csv
+
+### On Resume
+```bash
+# Check if baseline still running on VM
+ssh -i ~/.ssh/lambda-labs.pem ubuntu@161.118.191.241 "ps aux | grep python"
+
+# Check experiment log
+ssh -i ~/.ssh/lambda-labs.pem ubuntu@161.118.191.241 "cat ~/deep-past-challenge/experiments/log.jsonl"
+
+# If baseline complete, results will be in log.jsonl
+```
 
 ### Next Steps (after baseline completes)
 1. Review baseline metrics (BLEU, chrF++, GeomMean)
