@@ -13,6 +13,7 @@ dependencies = [
     "kaggle",
     "evaluate",
     "sacrebleu",
+    "muon-pytorch",
 ]
 
 [project.optional-dependencies]

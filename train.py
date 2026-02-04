@@ -51,6 +51,7 @@ class TrainConfig:
     gradient_accumulation_steps: int = 4
     learning_rate: float = 5e-5
     warmup_ratio: float = 0.1
+    optimizer: str = "adamw"  # "adamw" or "muon"
     weight_decay: float = 0.01
     max_grad_norm: float = 1.0
 
@@ -313,7 +314,18 @@ def train(config: TrainConfig):
     )
 
     # Optimizer and scheduler
-    optimizer = torch.optim.AdamW(model.parameters(), lr=config.learning_rate, weight_decay=config.weight_decay)
+    if config.optimizer == "muon":
+        try:
+            from muon import Muon
+
+            optimizer = Muon(model.parameters(), lr=config.learning_rate)
+            logger.info(f"Using Muon optimizer (lr={config.learning_rate})")
+        except ImportError:
+            logger.warning("muon-pytorch not installed, falling back to AdamW")
+            optimizer = torch.optim.AdamW(model.parameters(), lr=config.learning_rate, weight_decay=config.weight_decay)
+    else:
+        optimizer = torch.optim.AdamW(model.parameters(), lr=config.learning_rate, weight_decay=config.weight_decay)
+        logger.info(f"Using AdamW optimizer (lr={config.learning_rate}, wd={config.weight_decay})")
 
     total_steps = len(train_loader) * config.epochs // config.gradient_accumulation_steps
     warmup_steps = int(total_steps * config.warmup_ratio)
@@ -439,6 +451,7 @@ def parse_args():
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--num-workers", type=int, default=0)
     parser.add_argument("--no-amp", action="store_true", help="Disable automatic mixed precision")
+    parser.add_argument("--optimizer", type=str, default="adamw", choices=["adamw", "muon"], help="Optimizer type")
 
     return parser.parse_args()
 
@@ -466,6 +479,7 @@ def main():
         seed=args.seed,
         num_workers=args.num_workers,
         use_amp=not args.no_amp,
+        optimizer=args.optimizer,
     )
 
     train(config)
