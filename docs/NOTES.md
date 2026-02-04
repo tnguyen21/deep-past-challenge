@@ -87,3 +87,53 @@ ssh -i ~/.ssh/lambda-labs.pem ubuntu@161.118.191.241 "cat ~/deep-past-challenge/
 2. Run experiment with new config: `--epochs 30 --num-beams 4`
 3. If improved, try learning rate sweep: `--lr 1e-4`, `--lr 3e-5`, `--lr 1e-5`
 4. Consider byt5-base model next
+
+---
+
+## 2026-02-04: Competitor Model Analysis
+
+Downloaded and analyzed top competitor's model from Kaggle: `llkh0a/byt5-akkadian-model`
+
+### Model Architecture
+- **Model**: byt5-large (d_model=1536, d_ff=3968, 18 encoder layers, 6 decoder layers)
+- **Size**: 2.01GB
+- Much larger than our byt5-base (d_model=1472, 12 layers)
+
+### Key Training Choices Comparison
+
+| Parameter | Competitor | Our Best | Difference |
+|-----------|------------|----------|------------|
+| **Model** | byt5-large | byt5-base | Larger model |
+| **Batch size** | 20 | 4 | 5x larger |
+| **Grad accum** | 8 | 8 | Same |
+| **Effective batch** | 160 | 32 | 5x larger |
+| **Learning rate** | 1e-4 | 5e-5 | 2x higher |
+| **Optimizer** | Adafactor | AdamW | Different |
+| **Weight decay** | 0.01 | 0.0 | Regularization |
+| **Label smoothing** | 0.2 | 0.0 | Regularization |
+| **Epochs** | 20 | 30 | Fewer |
+| **Precision** | FP32 | BF16 | Higher precision |
+| **Best metric** | geo_mean | loss | Metric-based selection |
+
+### Key Insights
+
+1. **Much larger effective batch size (160 vs 32)** - Major difference. Larger batches + higher LR is a known scaling pattern.
+2. **Adafactor optimizer** - Memory-efficient, doesn't store momentum like Adam. Good for large models.
+3. **Label smoothing (0.2)** - Regularization that helps with overconfident predictions.
+4. **load_best_model_at_end with geo_mean metric** - Select checkpoints by actual competition metric, not loss.
+5. **Weight decay (0.01)** - Additional regularization.
+
+### Recommendations for Next Experiments
+
+1. **Try byt5-large** if memory allows (may need smaller batch + more grad accum)
+2. **Increase effective batch size** - larger grad_accum (e.g., 16 or 32)
+3. **Switch to Adafactor** optimizer
+4. **Add label smoothing (0.2)**
+5. **Add weight decay (0.01)**
+6. **Increase learning rate to 1e-4**
+7. **Select best checkpoint by geo_mean**, not loss
+
+### Competitor Model Location on VM
+```
+/home/ubuntu/.cache/kagglehub/datasets/llkh0a/byt5-akkadian-model/versions/1/
+```
