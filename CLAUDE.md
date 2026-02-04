@@ -29,6 +29,61 @@ Update `docs/NOTES.md` whenever significant state changes occur (experiment comp
 - **Failed experiments stay on branches**: If a change doesn't improve val score, document the results in the PR/commit message but do NOT merge to main
 - **PR before merge**: Open a PR for review before merging any experiment into main. Include metrics comparison vs baseline
 
+## Using `gh` CLI for PRs
+
+Always use the GitHub CLI (`gh`) for creating and managing PRs. This keeps everything scriptable and consistent.
+
+**Creating a PR:**
+```bash
+gh pr create --title "Short imperative title" --body "$(cat <<'EOF'
+## Summary
+One or two sentences: what does this PR do and why?
+
+## Changes
+Describe *what* changed at a high level. Group related changes logically. For each significant change, briefly explain *why* it was necessary—this is more valuable than restating the diff.
+
+## Testing
+How was this tested? What commands were run? Include metrics comparisons where relevant.
+
+## Review guidance
+Point the reviewer to the most important files or functions. Flag anything risky, hacky, or worth extra scrutiny. If there are areas where you made judgment calls, explain your reasoning so the reviewer can evaluate it.
+
+---
+🤖 Generated with Claude
+EOF
+)"
+```
+
+**Other useful commands:**
+- `gh pr list` — see open PRs
+- `gh pr view <number>` — view PR details
+- `gh pr checkout <number>` — check out a PR branch locally
+- `gh pr merge <number> --squash` — squash and merge (preferred for experiment branches)
+
+## PR Message Conventions
+
+The goal of a PR message is to let you confidently approve or request changes *without* reading every line of the diff. A good PR message answers: what changed, why it changed, and where to look if something seems off.
+
+**Title:** Use imperative mood, keep it under 60 characters. The title should complete the sentence "This PR will ___." Examples: "Add learning rate warmup", "Fix tokenizer padding bug", "Increase batch size to 16".
+
+**Summary:** One or two sentences describing the intent. Not a list of files changed—that's what the diff is for. Focus on the *goal* of the change.
+
+**Changes section:** Organize by logical grouping, not by file. Explain the "why" alongside the "what." For example: "Switched from AdamW to Adafactor to reduce memory usage, which allows us to increase batch size." This is more useful than "Changed optimizer in train.py."
+
+**Review guidance:** This is the most important section for efficient human review. Include:
+- **Key files to examine**: Which files contain the core logic changes? What should the reviewer focus on?
+- **Risk areas**: Any tricky code, edge cases, or places where bugs might hide?
+- **Judgment calls**: If you made a decision that could reasonably go another way, explain your reasoning so the reviewer can weigh in.
+- **What NOT to worry about**: If there's boilerplate, auto-generated code, or trivial changes, say so—this saves review time.
+
+**Metrics (for experiments):** Always include before/after metrics relative to baseline. Format consistently:
+```
+Baseline: geom_mean 18.5
+This PR: geom_mean 21.2 (+2.7, +14.6%)
+```
+
+**Keep it scannable:** Use short paragraphs. A reviewer should be able to skim and understand the gist in 30 seconds, then dive deeper if needed.
+
 ## Experiment Discipline
 
 - **Baseline first**: Must establish and document a baseline experiment before any other experimentation. All subsequent experiments compare against baseline metrics
