@@ -52,6 +52,7 @@ class TrainConfig:
     learning_rate: float = 5e-5
     warmup_ratio: float = 0.1
     weight_decay: float = 0.01
+    label_smoothing: float = 0.0  # Label smoothing factor (0 = disabled)
     max_grad_norm: float = 1.0
 
     # Data
@@ -147,6 +148,29 @@ class AkkadianDataset(Dataset):
             "attention_mask": self.attention_mask[idx],
             "labels": self.labels[idx],
         }
+
+
+def label_smoothed_nll_loss(logits: torch.Tensor, labels: torch.Tensor, smoothing: float = 0.0, ignore_index: int = -100) -> torch.Tensor:
+    """Compute cross-entropy loss with label smoothing."""
+    vocab_size = logits.size(-1)
+    logits_flat = logits.view(-1, vocab_size)
+    labels_flat = labels.view(-1)
+    mask = labels_flat != ignore_index
+
+    if smoothing > 0:
+        log_probs = torch.nn.functional.log_softmax(logits_flat, dim=-1)
+        with torch.no_grad():
+            smooth_labels = torch.zeros_like(log_probs)
+            smooth_labels.fill_(smoothing / (vocab_size - 1))
+            valid_labels = labels_flat.clone()
+            valid_labels[~mask] = 0
+            smooth_labels.scatter_(1, valid_labels.unsqueeze(1), 1.0 - smoothing)
+        loss = (-smooth_labels * log_probs).sum(dim=-1)
+        loss = (loss * mask.float()).sum() / mask.float().sum()
+    else:
+        loss = torch.nn.functional.cross_entropy(logits_flat, labels_flat, ignore_index=ignore_index)
+
+    return loss
 
 
 def get_adaptive_beam_size(attention_mask: torch.Tensor, base_beams: int, use_adaptive: bool = True) -> int:
@@ -353,7 +377,11 @@ def train(config: TrainConfig):
 
             with torch.amp.autocast(device_type=config.device_type, dtype=config.amp_dtype, enabled=config.use_amp):
                 outputs = model(input_ids=input_ids, attention_mask=attention_mask, labels=labels)
-                loss = outputs.loss / config.gradient_accumulation_steps
+                if config.label_smoothing > 0:
+                    loss = label_smoothed_nll_loss(outputs.logits, labels, config.label_smoothing)
+                else:
+                    loss = outputs.loss
+                loss = loss / config.gradient_accumulation_steps
 
             if use_scaler:
                 scaler.scale(loss).backward()
@@ -428,6 +456,7 @@ def parse_args():
     parser.add_argument("--grad-accum", type=int, default=4)
     parser.add_argument("--lr", type=float, default=5e-5)
     parser.add_argument("--warmup-ratio", type=float, default=0.1)
+    parser.add_argument("--label-smoothing", type=float, default=0.0, help="Label smoothing factor")
 
     parser.add_argument("--max-source-length", type=int, default=512)
     parser.add_argument("--max-target-length", type=int, default=512)
@@ -457,6 +486,7 @@ def main():
         gradient_accumulation_steps=args.grad_accum,
         learning_rate=args.lr,
         warmup_ratio=args.warmup_ratio,
+        label_smoothing=args.label_smoothing,
         max_source_length=args.max_source_length,
         max_target_length=args.max_target_length,
         val_split=args.val_split,
