@@ -42,7 +42,7 @@ class TrainConfig:
     experiment_name: str = ""
 
     # Training
-    epochs: int = 10
+    epochs: int = 30  # 30 epochs for better convergence (loss still decreasing at 10)
     batch_size: int = 8
     gradient_accumulation_steps: int = 4
     learning_rate: float = 5e-5
@@ -55,16 +55,18 @@ class TrainConfig:
     max_target_length: int = 512
     val_split: float = 0.1
 
-    # Generation (for validation) - use greedy for speed, beam search only for final eval
-    num_beams: int = 1
-    max_new_tokens: int = 512
+    # Generation (for validation)
+    num_beams: int = 4  # Use beam search for validation to match inference
+    max_new_tokens: int = 256  # Max tokens for validation generation (256 is faster, 512 for final eval)
+    use_adaptive_beams: bool = True  # Use fewer beams for short sequences
 
     # Misc
     seed: int = 42
     save_every: int = 1
-    eval_every: int = 1
+    eval_every: int = 5  # Evaluate every N epochs (0 = only final epoch)
     num_workers: int = 4  # Parallel data loading
     use_amp: bool = True  # Use automatic mixed precision (BF16 on CUDA, disabled elsewhere)
+    use_better_transformer: bool = False  # Use optimum BetterTransformer for faster inference
 
     # Device
     device: torch.device = field(init=False)
@@ -142,6 +144,21 @@ class AkkadianDataset(Dataset):
         }
 
 
+def get_adaptive_beam_size(attention_mask: torch.Tensor, base_beams: int, use_adaptive: bool = True) -> int:
+    """Use fewer beams for shorter sequences to speed up generation."""
+    if not use_adaptive or base_beams <= 2:
+        return base_beams
+
+    # Compute max length in batch
+    lengths = attention_mask.sum(dim=1)
+    max_len = int(lengths.max().item())
+
+    # Short sequences (<100 tokens): use fewer beams
+    if max_len < 100:
+        return max(2, base_beams // 2)
+    return base_beams
+
+
 def compute_metrics(predictions: list[str], references: list[str]) -> dict:
     """Compute competition metric: geometric mean of BLEU and chrF++."""
     bleu = load_metric("sacrebleu")
@@ -180,12 +197,16 @@ def evaluate(model, tokenizer, val_loader, config: TrainConfig) -> dict:
             input_ids = batch["input_ids"].to(config.device)
             attention_mask = batch["attention_mask"].to(config.device)
 
+            # Use adaptive beam sizing for speed
+            num_beams = get_adaptive_beam_size(attention_mask, config.num_beams, config.use_adaptive_beams)
+
             outputs = model.generate(
                 input_ids=input_ids,
                 attention_mask=attention_mask,
                 max_new_tokens=config.max_new_tokens,
-                num_beams=config.num_beams,
+                num_beams=num_beams,
                 early_stopping=True,
+                use_cache=True,
             )
 
             preds = tokenizer.batch_decode(outputs, skip_special_tokens=True)
@@ -236,6 +257,19 @@ def train(config: TrainConfig):
 
     num_params = sum(p.numel() for p in model.parameters())
     logger.info(f"Model parameters: {num_params:,}")
+
+    # Apply BetterTransformer for faster inference (optional)
+    if config.use_better_transformer and config.device_type == "cuda":
+        try:
+            from optimum.bettertransformer import BetterTransformer
+
+            logger.info("Applying BetterTransformer...")
+            model = BetterTransformer.transform(model)
+            logger.info("BetterTransformer applied (20-50% inference speedup)")
+        except ImportError:
+            logger.warning("'optimum' not installed, skipping BetterTransformer. Install with: pip install optimum")
+        except Exception as exc:
+            logger.warning(f"BetterTransformer failed: {exc}")
 
     # Compile model for faster training (PyTorch 2.0+)
     if hasattr(torch, "compile") and config.device_type == "cuda":
@@ -329,21 +363,25 @@ def train(config: TrainConfig):
         history["train_loss"].append(avg_loss)
         logger.info(f"Epoch {epoch + 1} - Train Loss: {avg_loss:.4f}")
 
-        # Only evaluate on final epoch
-        if epoch + 1 == config.epochs:
+        # Evaluate every N epochs or on final epoch
+        is_final_epoch = epoch + 1 == config.epochs
+        should_eval = is_final_epoch or (config.eval_every > 0 and (epoch + 1) % config.eval_every == 0)
+
+        if should_eval:
             metrics = evaluate(model, tokenizer, val_loader, config)
             history["val_metrics"].append({"epoch": epoch + 1, **metrics})
             logger.info(
                 f"Epoch {epoch + 1} - Val BLEU: {metrics['bleu']:.2f}, chrF++: {metrics['chrf++']:.2f}, GeomMean: {metrics['geom_mean']:.2f}"
             )
-            best_geom_mean = metrics["geom_mean"]
 
-            # Save final model
-            best_path = Path(config.output_dir) / config.experiment_name / "best"
-            best_path.mkdir(parents=True, exist_ok=True)
-            model.save_pretrained(best_path)
-            tokenizer.save_pretrained(best_path)
-            logger.info(f"Final model saved! GeomMean: {best_geom_mean:.2f}")
+            # Save best model
+            if metrics["geom_mean"] > best_geom_mean:
+                best_geom_mean = metrics["geom_mean"]
+                best_path = Path(config.output_dir) / config.experiment_name / "best"
+                best_path.mkdir(parents=True, exist_ok=True)
+                model.save_pretrained(best_path)
+                tokenizer.save_pretrained(best_path)
+                logger.info(f"New best model saved! GeomMean: {best_geom_mean:.2f}")
 
     # Save history
     history_path = Path(config.output_dir) / config.experiment_name / "history.json"
@@ -365,7 +403,7 @@ def parse_args():
     parser.add_argument("--output-dir", type=str, default="checkpoints")
     parser.add_argument("--experiment-name", type=str, default="")
 
-    parser.add_argument("--epochs", type=int, default=10)
+    parser.add_argument("--epochs", type=int, default=30)
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--grad-accum", type=int, default=4)
     parser.add_argument("--lr", type=float, default=5e-5)
@@ -376,6 +414,7 @@ def parse_args():
     parser.add_argument("--val-split", type=float, default=0.1)
 
     parser.add_argument("--num-beams", type=int, default=4)
+    parser.add_argument("--eval-every", type=int, default=5, help="Evaluate every N epochs (0 = only final)")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--num-workers", type=int, default=0)
     parser.add_argument("--no-amp", action="store_true", help="Disable automatic mixed precision")
@@ -401,6 +440,7 @@ def main():
         max_target_length=args.max_target_length,
         val_split=args.val_split,
         num_beams=args.num_beams,
+        eval_every=args.eval_every,
         seed=args.seed,
         num_workers=args.num_workers,
         use_amp=not args.no_amp,
