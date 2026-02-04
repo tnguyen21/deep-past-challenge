@@ -53,6 +53,7 @@ class TrainConfig:
     warmup_ratio: float = 0.1
     weight_decay: float = 0.01
     max_grad_norm: float = 1.0
+    freeze_encoder_layers: int = 0  # Number of encoder layers to freeze (0 = none)
 
     # Data
     max_source_length: int = 512
@@ -273,6 +274,19 @@ def train(config: TrainConfig):
     num_params = sum(p.numel() for p in model.parameters())
     logger.info(f"Model parameters: {num_params:,}")
 
+    # Freeze encoder layers if specified
+    if config.freeze_encoder_layers > 0:
+        encoder = model.encoder
+        if hasattr(encoder, "block"):
+            # T5-style model
+            layers_to_freeze = min(config.freeze_encoder_layers, len(encoder.block))
+            for i in range(layers_to_freeze):
+                for param in encoder.block[i].parameters():
+                    param.requires_grad = False
+            frozen_params = sum(p.numel() for p in model.parameters() if not p.requires_grad)
+            trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+            logger.info(f"Froze {layers_to_freeze} encoder layers ({frozen_params:,} params frozen, {trainable_params:,} trainable)")
+
     # Apply BetterTransformer for faster inference (optional)
     if config.use_better_transformer and config.device_type == "cuda":
         try:
@@ -439,6 +453,7 @@ def parse_args():
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--num-workers", type=int, default=0)
     parser.add_argument("--no-amp", action="store_true", help="Disable automatic mixed precision")
+    parser.add_argument("--freeze-encoder-layers", type=int, default=0, help="Number of encoder layers to freeze")
 
     return parser.parse_args()
 
@@ -466,6 +481,7 @@ def main():
         seed=args.seed,
         num_workers=args.num_workers,
         use_amp=not args.no_amp,
+        freeze_encoder_layers=args.freeze_encoder_layers,
     )
 
     train(config)
