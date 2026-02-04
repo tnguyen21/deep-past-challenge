@@ -38,6 +38,7 @@ output/
 *.safetensors
 data/
 models/
+checkpoints/
 
 # Kaggle
 kaggle.json

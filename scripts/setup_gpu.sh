@@ -53,7 +53,7 @@ if [ ! -d "data" ] || [ ! -f "data/train.csv" ]; then
 fi
 
 # Make scripts executable
-chmod +x run_experiment.sh
+chmod +x scripts/run_experiment.sh
 
 echo ""
 echo "=========================================="
@@ -62,12 +62,12 @@ echo "=========================================="
 echo ""
 echo "Quick start:"
 echo "  source .venv/bin/activate"
-echo "  python status.py                    # Check experiment status"
-echo "  ./run_experiment.sh baseline        # Run baseline experiment"
+echo "  python experiments/status.py              # Check experiment status"
+echo "  ./scripts/run_experiment.sh baseline      # Run baseline experiment"
 echo ""
 echo "Iteration loop:"
-echo "  1. Run: ./run_experiment.sh <name> <model> <epochs> <batch> <lr>"
-echo "  2. Run: python status.py            # Review results"
+echo "  1. Run: ./scripts/run_experiment.sh <name> <model> <epochs> <batch> <lr>"
+echo "  2. Run: python experiments/status.py      # Review results"
 echo "  3. Discuss with Claude Code         # Get suggestions"
 echo "  4. Repeat"
 echo ""

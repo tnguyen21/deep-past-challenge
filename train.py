@@ -18,7 +18,6 @@ import torch
 # Evaluation metrics
 from evaluate import load as load_metric
 from torch.utils.data import DataLoader, Dataset
-from tqdm.auto import tqdm
 from transformers import (
     AutoModelForSeq2SeqLM,
     AutoTokenizer,
@@ -27,6 +26,10 @@ from transformers import (
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
+
+# Performance optimizations
+torch.backends.cudnn.benchmark = True  # Optimize for consistent input sizes
+torch.set_float32_matmul_precision("medium")  # Enable TF32 for matmuls
 
 
 @dataclass
@@ -52,15 +55,15 @@ class TrainConfig:
     max_target_length: int = 512
     val_split: float = 0.1
 
-    # Generation (for validation)
-    num_beams: int = 4
+    # Generation (for validation) - use greedy for speed, beam search only for final eval
+    num_beams: int = 1
     max_new_tokens: int = 512
 
     # Misc
     seed: int = 42
     save_every: int = 1
     eval_every: int = 1
-    num_workers: int = 0
+    num_workers: int = 4  # Parallel data loading
     use_amp: bool = True  # Use automatic mixed precision (BF16 on CUDA, disabled elsewhere)
 
     # Device
@@ -93,13 +96,31 @@ class TrainConfig:
 
 class AkkadianDataset(Dataset):
     def __init__(self, df: pd.DataFrame, tokenizer, max_source_length: int, max_target_length: int):
-        self.tokenizer = tokenizer
-        self.max_source_length = max_source_length
-        self.max_target_length = max_target_length
+        # Preprocess sources
+        sources = [self._preprocess_source(t) for t in df["transliteration"].tolist()]
+        targets = df["translation"].tolist()
 
-        # Preprocess
-        self.sources = [self._preprocess_source(t) for t in df["transliteration"].tolist()]
-        self.targets = df["translation"].tolist()
+        # Pre-tokenize everything once (much faster than tokenizing per __getitem__)
+        logger.info(f"Pre-tokenizing {len(sources)} samples...")
+        source_enc = tokenizer(
+            sources,
+            max_length=max_source_length,
+            padding="max_length",
+            truncation=True,
+            return_tensors="pt",
+        )
+        target_enc = tokenizer(
+            targets,
+            max_length=max_target_length,
+            padding="max_length",
+            truncation=True,
+            return_tensors="pt",
+        )
+
+        self.input_ids = source_enc.input_ids
+        self.attention_mask = source_enc.attention_mask
+        self.labels = target_enc.input_ids.clone()
+        self.labels[self.labels == tokenizer.pad_token_id] = -100
 
     def _preprocess_source(self, text: str) -> str:
         if pd.isna(text):
@@ -111,35 +132,13 @@ class AkkadianDataset(Dataset):
         return "translate Akkadian to English: " + text
 
     def __len__(self):
-        return len(self.sources)
+        return len(self.input_ids)
 
     def __getitem__(self, idx):
-        source = self.sources[idx]
-        target = self.targets[idx]
-
-        source_enc = self.tokenizer(
-            source,
-            max_length=self.max_source_length,
-            padding="max_length",
-            truncation=True,
-            return_tensors="pt",
-        )
-
-        target_enc = self.tokenizer(
-            target,
-            max_length=self.max_target_length,
-            padding="max_length",
-            truncation=True,
-            return_tensors="pt",
-        )
-
-        labels = target_enc.input_ids.squeeze()
-        labels[labels == self.tokenizer.pad_token_id] = -100
-
         return {
-            "input_ids": source_enc.input_ids.squeeze(),
-            "attention_mask": source_enc.attention_mask.squeeze(),
-            "labels": labels,
+            "input_ids": self.input_ids[idx],
+            "attention_mask": self.attention_mask[idx],
+            "labels": self.labels[idx],
         }
 
 
@@ -177,7 +176,7 @@ def evaluate(model, tokenizer, val_loader, config: TrainConfig) -> dict:
     references = []
 
     with torch.no_grad():
-        for batch in tqdm(val_loader, desc="Evaluating"):
+        for batch in val_loader:
             input_ids = batch["input_ids"].to(config.device)
             attention_mask = batch["attention_mask"].to(config.device)
 
@@ -238,6 +237,11 @@ def train(config: TrainConfig):
     num_params = sum(p.numel() for p in model.parameters())
     logger.info(f"Model parameters: {num_params:,}")
 
+    # Compile model for faster training (PyTorch 2.0+)
+    if hasattr(torch, "compile") and config.device_type == "cuda":
+        logger.info("Compiling model with torch.compile...")
+        model = torch.compile(model)
+
     # Create datasets
     train_dataset = AkkadianDataset(train_df, tokenizer, config.max_source_length, config.max_target_length)
     val_dataset = AkkadianDataset(val_df, tokenizer, config.max_source_length, config.max_target_length)
@@ -248,6 +252,7 @@ def train(config: TrainConfig):
         shuffle=True,
         num_workers=config.num_workers,
         pin_memory=config.device_type == "cuda",
+        persistent_workers=config.num_workers > 0,
     )
     val_loader = DataLoader(
         val_dataset,
@@ -255,6 +260,7 @@ def train(config: TrainConfig):
         shuffle=False,
         num_workers=config.num_workers,
         pin_memory=config.device_type == "cuda",
+        persistent_workers=config.num_workers > 0,
     )
 
     # Optimizer and scheduler
@@ -291,8 +297,7 @@ def train(config: TrainConfig):
         epoch_loss = 0.0
         optimizer.zero_grad()
 
-        pbar = tqdm(train_loader, desc=f"Epoch {epoch + 1}/{config.epochs}")
-        for step, batch in enumerate(pbar):
+        for step, batch in enumerate(train_loader):
             input_ids = batch["input_ids"].to(config.device)
             attention_mask = batch["attention_mask"].to(config.device)
             labels = batch["labels"].to(config.device)
@@ -320,35 +325,25 @@ def train(config: TrainConfig):
                 optimizer.zero_grad()
                 global_step += 1
 
-            pbar.set_postfix({"loss": f"{loss.item() * config.gradient_accumulation_steps:.4f}"})
-
         avg_loss = epoch_loss / len(train_loader)
         history["train_loss"].append(avg_loss)
         logger.info(f"Epoch {epoch + 1} - Train Loss: {avg_loss:.4f}")
 
-        # Evaluation
-        if (epoch + 1) % config.eval_every == 0:
+        # Only evaluate on final epoch
+        if epoch + 1 == config.epochs:
             metrics = evaluate(model, tokenizer, val_loader, config)
             history["val_metrics"].append({"epoch": epoch + 1, **metrics})
             logger.info(
                 f"Epoch {epoch + 1} - Val BLEU: {metrics['bleu']:.2f}, chrF++: {metrics['chrf++']:.2f}, GeomMean: {metrics['geom_mean']:.2f}"
             )
+            best_geom_mean = metrics["geom_mean"]
 
-            # Save best model
-            if metrics["geom_mean"] > best_geom_mean:
-                best_geom_mean = metrics["geom_mean"]
-                best_path = Path(config.output_dir) / config.experiment_name / "best"
-                best_path.mkdir(parents=True, exist_ok=True)
-                model.save_pretrained(best_path)
-                tokenizer.save_pretrained(best_path)
-                logger.info(f"New best model saved! GeomMean: {best_geom_mean:.2f}")
-
-        # Save checkpoint
-        if (epoch + 1) % config.save_every == 0:
-            ckpt_path = Path(config.output_dir) / config.experiment_name / f"epoch_{epoch + 1}"
-            ckpt_path.mkdir(parents=True, exist_ok=True)
-            model.save_pretrained(ckpt_path)
-            tokenizer.save_pretrained(ckpt_path)
+            # Save final model
+            best_path = Path(config.output_dir) / config.experiment_name / "best"
+            best_path.mkdir(parents=True, exist_ok=True)
+            model.save_pretrained(best_path)
+            tokenizer.save_pretrained(best_path)
+            logger.info(f"Final model saved! GeomMean: {best_geom_mean:.2f}")
 
     # Save history
     history_path = Path(config.output_dir) / config.experiment_name / "history.json"
