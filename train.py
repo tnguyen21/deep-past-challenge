@@ -28,6 +28,10 @@ from transformers import (
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
+# Performance optimizations
+torch.backends.cudnn.benchmark = True  # Optimize for consistent input sizes
+torch.set_float32_matmul_precision("medium")  # Enable TF32 for matmuls
+
 
 @dataclass
 class TrainConfig:
@@ -60,7 +64,7 @@ class TrainConfig:
     seed: int = 42
     save_every: int = 1
     eval_every: int = 1
-    num_workers: int = 0
+    num_workers: int = 4  # Parallel data loading
     use_amp: bool = True  # Use automatic mixed precision (BF16 on CUDA, disabled elsewhere)
 
     # Device
@@ -93,13 +97,31 @@ class TrainConfig:
 
 class AkkadianDataset(Dataset):
     def __init__(self, df: pd.DataFrame, tokenizer, max_source_length: int, max_target_length: int):
-        self.tokenizer = tokenizer
-        self.max_source_length = max_source_length
-        self.max_target_length = max_target_length
+        # Preprocess sources
+        sources = [self._preprocess_source(t) for t in df["transliteration"].tolist()]
+        targets = df["translation"].tolist()
 
-        # Preprocess
-        self.sources = [self._preprocess_source(t) for t in df["transliteration"].tolist()]
-        self.targets = df["translation"].tolist()
+        # Pre-tokenize everything once (much faster than tokenizing per __getitem__)
+        logger.info(f"Pre-tokenizing {len(sources)} samples...")
+        source_enc = tokenizer(
+            sources,
+            max_length=max_source_length,
+            padding="max_length",
+            truncation=True,
+            return_tensors="pt",
+        )
+        target_enc = tokenizer(
+            targets,
+            max_length=max_target_length,
+            padding="max_length",
+            truncation=True,
+            return_tensors="pt",
+        )
+
+        self.input_ids = source_enc.input_ids
+        self.attention_mask = source_enc.attention_mask
+        self.labels = target_enc.input_ids.clone()
+        self.labels[self.labels == tokenizer.pad_token_id] = -100
 
     def _preprocess_source(self, text: str) -> str:
         if pd.isna(text):
@@ -111,35 +133,13 @@ class AkkadianDataset(Dataset):
         return "translate Akkadian to English: " + text
 
     def __len__(self):
-        return len(self.sources)
+        return len(self.input_ids)
 
     def __getitem__(self, idx):
-        source = self.sources[idx]
-        target = self.targets[idx]
-
-        source_enc = self.tokenizer(
-            source,
-            max_length=self.max_source_length,
-            padding="max_length",
-            truncation=True,
-            return_tensors="pt",
-        )
-
-        target_enc = self.tokenizer(
-            target,
-            max_length=self.max_target_length,
-            padding="max_length",
-            truncation=True,
-            return_tensors="pt",
-        )
-
-        labels = target_enc.input_ids.squeeze()
-        labels[labels == self.tokenizer.pad_token_id] = -100
-
         return {
-            "input_ids": source_enc.input_ids.squeeze(),
-            "attention_mask": source_enc.attention_mask.squeeze(),
-            "labels": labels,
+            "input_ids": self.input_ids[idx],
+            "attention_mask": self.attention_mask[idx],
+            "labels": self.labels[idx],
         }
 
 
@@ -238,6 +238,11 @@ def train(config: TrainConfig):
     num_params = sum(p.numel() for p in model.parameters())
     logger.info(f"Model parameters: {num_params:,}")
 
+    # Compile model for faster training (PyTorch 2.0+)
+    if hasattr(torch, "compile") and config.device_type == "cuda":
+        logger.info("Compiling model with torch.compile...")
+        model = torch.compile(model)
+
     # Create datasets
     train_dataset = AkkadianDataset(train_df, tokenizer, config.max_source_length, config.max_target_length)
     val_dataset = AkkadianDataset(val_df, tokenizer, config.max_source_length, config.max_target_length)
@@ -248,6 +253,7 @@ def train(config: TrainConfig):
         shuffle=True,
         num_workers=config.num_workers,
         pin_memory=config.device_type == "cuda",
+        persistent_workers=config.num_workers > 0,
     )
     val_loader = DataLoader(
         val_dataset,
@@ -255,6 +261,7 @@ def train(config: TrainConfig):
         shuffle=False,
         num_workers=config.num_workers,
         pin_memory=config.device_type == "cuda",
+        persistent_workers=config.num_workers > 0,
     )
 
     # Optimizer and scheduler
