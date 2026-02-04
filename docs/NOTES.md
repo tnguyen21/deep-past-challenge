@@ -55,3 +55,35 @@ ssh -i ~/.ssh/lambda-labs.pem ubuntu@161.118.191.241 "cat ~/deep-past-challenge/
 - Byte-level tokenization means long sequences - may need to adjust max_length
 - Train/test mismatch: training data is document-level, test is sentence-level
 - Low-resource setting (~1500 examples) - overfitting risk
+
+---
+
+## 2026-02-04: Beam Search Optimizations & Training Config Updates
+
+### Baseline Results
+- **GeomMean**: 1.57 (BLEU 0.28, chrF++ 8.64)
+- **Target**: ~35.1 (from pre-trained model in byt_ensemble.py)
+- **Gap**: ~22x improvement needed
+- Logged to `experiments/log.jsonl`
+
+### Changes Made (Branch: exp/perf)
+
+#### Beam Search Optimizations (Priority 0)
+1. **use_cache=True** added to model.generate() - enables KV-cache reuse (20-40% speedup)
+2. **Adaptive beam sizing** - fewer beams for short sequences (<100 tokens)
+3. **BetterTransformer support** - optional, requires `pip install optimum`
+4. **max_new_tokens reduced to 256** for validation (was 512)
+
+#### Training Config Updates (Tier 1 Quick Wins)
+1. **epochs: 10 → 30** - loss was still decreasing, model undertrained
+2. **num_beams: 1 → 4** - match inference-time decoding for better metrics
+
+### Commits
+- `460197c` Add beam search optimizations for faster validation
+- `3dda8ad` Update training defaults for better convergence
+
+### Next Steps
+1. Push branch to remote, pull on VM
+2. Run experiment with new config: `--epochs 30 --num-beams 4`
+3. If improved, try learning rate sweep: `--lr 1e-4`, `--lr 3e-5`, `--lr 1e-5`
+4. Consider byt5-base model next
