@@ -63,7 +63,7 @@ class TrainConfig:
     # Misc
     seed: int = 42
     save_every: int = 1
-    eval_every: int = 1
+    eval_every: int = 5  # Evaluate every N epochs (0 = only final epoch)
     num_workers: int = 4  # Parallel data loading
     use_amp: bool = True  # Use automatic mixed precision (BF16 on CUDA, disabled elsewhere)
     use_better_transformer: bool = False  # Use optimum BetterTransformer for faster inference
@@ -363,21 +363,25 @@ def train(config: TrainConfig):
         history["train_loss"].append(avg_loss)
         logger.info(f"Epoch {epoch + 1} - Train Loss: {avg_loss:.4f}")
 
-        # Only evaluate on final epoch
-        if epoch + 1 == config.epochs:
+        # Evaluate every N epochs or on final epoch
+        is_final_epoch = epoch + 1 == config.epochs
+        should_eval = is_final_epoch or (config.eval_every > 0 and (epoch + 1) % config.eval_every == 0)
+
+        if should_eval:
             metrics = evaluate(model, tokenizer, val_loader, config)
             history["val_metrics"].append({"epoch": epoch + 1, **metrics})
             logger.info(
                 f"Epoch {epoch + 1} - Val BLEU: {metrics['bleu']:.2f}, chrF++: {metrics['chrf++']:.2f}, GeomMean: {metrics['geom_mean']:.2f}"
             )
-            best_geom_mean = metrics["geom_mean"]
 
-            # Save final model
-            best_path = Path(config.output_dir) / config.experiment_name / "best"
-            best_path.mkdir(parents=True, exist_ok=True)
-            model.save_pretrained(best_path)
-            tokenizer.save_pretrained(best_path)
-            logger.info(f"Final model saved! GeomMean: {best_geom_mean:.2f}")
+            # Save best model
+            if metrics["geom_mean"] > best_geom_mean:
+                best_geom_mean = metrics["geom_mean"]
+                best_path = Path(config.output_dir) / config.experiment_name / "best"
+                best_path.mkdir(parents=True, exist_ok=True)
+                model.save_pretrained(best_path)
+                tokenizer.save_pretrained(best_path)
+                logger.info(f"New best model saved! GeomMean: {best_geom_mean:.2f}")
 
     # Save history
     history_path = Path(config.output_dir) / config.experiment_name / "history.json"
@@ -410,6 +414,7 @@ def parse_args():
     parser.add_argument("--val-split", type=float, default=0.1)
 
     parser.add_argument("--num-beams", type=int, default=4)
+    parser.add_argument("--eval-every", type=int, default=5, help="Evaluate every N epochs (0 = only final)")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--num-workers", type=int, default=0)
     parser.add_argument("--no-amp", action="store_true", help="Disable automatic mixed precision")
@@ -435,6 +440,7 @@ def main():
         max_target_length=args.max_target_length,
         val_split=args.val_split,
         num_beams=args.num_beams,
+        eval_every=args.eval_every,
         seed=args.seed,
         num_workers=args.num_workers,
         use_amp=not args.no_amp,
