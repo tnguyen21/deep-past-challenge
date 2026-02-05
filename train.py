@@ -56,6 +56,8 @@ class TrainConfig:
     weight_decay: float = 0.01
     label_smoothing: float = 0.0  # Label smoothing factor (0 = disabled)
     max_grad_norm: float = 1.0
+    patience: int = 0  # Early stopping patience (0 = disabled)
+    min_delta: float = 0.01  # Minimum loss improvement to reset patience
 
     # Data
     max_source_length: int = 512
@@ -534,6 +536,8 @@ def main():
         warmup_ratio=args.warmup_ratio,
         label_smoothing=args.label_smoothing,
         optimizer=args.optimizer,
+        patience=args.patience,
+        min_delta=args.min_delta,
         max_source_length=args.max_source_length,
         max_target_length=args.max_target_length,
         val_split=args.val_split,
