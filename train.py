@@ -264,12 +264,64 @@ def evaluate(model, tokenizer, val_loader, config: TrainConfig, num_beams: int |
     return metrics
 
 
+def print_config(config: TrainConfig):
+    """Pretty print training configuration."""
+    lines = [
+        "",
+        "=" * 60,
+        "TRAINING CONFIGURATION",
+        "=" * 60,
+        "",
+        "Model & Paths:",
+        f"  model_name:       {config.model_name}",
+        f"  train_data:       {config.train_data}",
+        f"  val_data:         {config.val_data or '(split from train)'}",
+        f"  output_dir:       {config.output_dir}",
+        f"  experiment_name:  {config.experiment_name}",
+        "",
+        "Training:",
+        f"  epochs:           {config.epochs}",
+        f"  batch_size:       {config.batch_size}",
+        f"  grad_accum:       {config.gradient_accumulation_steps}",
+        f"  effective_batch:  {config.batch_size * config.gradient_accumulation_steps}",
+        f"  learning_rate:    {config.learning_rate}",
+        f"  warmup_ratio:     {config.warmup_ratio}",
+        f"  weight_decay:     {config.weight_decay}",
+        f"  max_grad_norm:    {config.max_grad_norm}",
+        "",
+        "Data:",
+        f"  max_source_len:   {config.max_source_length}",
+        f"  max_target_len:   {config.max_target_length}",
+        f"  val_split:        {config.val_split}",
+        "",
+        "Generation:",
+        f"  num_beams:        {config.num_beams} (intermediate evals)",
+        f"  final_num_beams:  {config.final_num_beams} (final epoch)",
+        f"  max_new_tokens:   {config.max_new_tokens}",
+        f"  adaptive_beams:   {config.use_adaptive_beams}",
+        "",
+        "Hardware:",
+        f"  device:           {config.device}",
+        f"  use_amp:          {config.use_amp}",
+        f"  amp_dtype:        {config.amp_dtype}",
+        f"  num_workers:      {config.num_workers}",
+        "",
+        "Misc:",
+        f"  seed:             {config.seed}",
+        f"  save_every:       {config.save_every}",
+        f"  eval_every:       {config.eval_every or 'final only'}",
+        "",
+        "=" * 60,
+        "",
+    ]
+    for line in lines:
+        logger.info(line)
+
+
 def train(config: TrainConfig):
     """Main training loop."""
     logger.info(f"Starting experiment: {config.experiment_name}")
-    logger.info(f"Device: {config.device} ({config.device_type})")
-    logger.info(f"Model: {config.model_name}")
-    logger.info(f"AMP: {config.use_amp}, dtype: {config.amp_dtype}")
+    print_config(config)
 
     # Set seed
     torch.manual_seed(config.seed)
