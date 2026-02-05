@@ -32,6 +32,14 @@ from transformers import (
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
+# Try to import Muon optimizer
+try:
+    from muon import SingleDeviceMuonWithAuxAdam
+
+    MUON_AVAILABLE = True
+except ImportError:
+    MUON_AVAILABLE = False
+
 # Performance optimizations
 torch.backends.cudnn.benchmark = True  # Optimize for consistent input sizes
 torch.set_float32_matmul_precision("medium")  # Enable TF32 for matmuls
@@ -315,7 +323,37 @@ def train(config: TrainConfig):
     )
 
     # Optimizer and scheduler
-    if config.optimizer == "adafactor":
+    if config.optimizer == "muon":
+        if not MUON_AVAILABLE:
+            raise ImportError("Muon optimizer not installed. Install with: pip install git+https://github.com/KellerJordan/Muon")
+
+        # Get the underlying model (handle torch.compile wrapper)
+        base_model = model._orig_mod if hasattr(model, "_orig_mod") else model
+
+        # Separate params for Muon vs Adam
+        # Muon: hidden 2D weights (encoder/decoder blocks)
+        # Adam: embeddings, biases/gains (1D params), lm_head
+        hidden_2d_params = []
+        other_params = []
+
+        for name, param in base_model.named_parameters():
+            if not param.requires_grad:
+                continue
+            # Use Muon for 2D+ params in encoder/decoder blocks (not embeddings)
+            if param.ndim >= 2 and ("block" in name or "layer" in name) and "embed" not in name:
+                hidden_2d_params.append(param)
+            else:
+                other_params.append(param)
+
+        logger.info(f"Muon params: {len(hidden_2d_params)} tensors, Adam params: {len(other_params)} tensors")
+
+        param_groups = [
+            dict(params=hidden_2d_params, use_muon=True, lr=0.02, weight_decay=config.weight_decay),
+            dict(params=other_params, use_muon=False, lr=config.learning_rate, betas=(0.9, 0.95), eps=1e-10, weight_decay=config.weight_decay),
+        ]
+        optimizer = SingleDeviceMuonWithAuxAdam(param_groups)
+        logger.info(f"Using Muon optimizer (muon_lr=0.02, adam_lr={config.learning_rate})")
+    elif config.optimizer == "adafactor":
         # Adafactor with relative step size (no external LR scheduler needed)
         optimizer = Adafactor(
             model.parameters(),
@@ -442,7 +480,7 @@ def parse_args():
     parser.add_argument("--grad-accum", type=int, default=4)
     parser.add_argument("--lr", type=float, default=5e-5)
     parser.add_argument("--warmup-ratio", type=float, default=0.1)
-    parser.add_argument("--optimizer", type=str, default="adamw", choices=["adamw", "adafactor"], help="Optimizer type")
+    parser.add_argument("--optimizer", type=str, default="adamw", choices=["adamw", "adafactor", "muon"], help="Optimizer type")
 
     parser.add_argument("--max-source-length", type=int, default=512)
     parser.add_argument("--max-target-length", type=int, default=512)
