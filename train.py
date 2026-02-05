@@ -23,6 +23,7 @@ import torch
 from evaluate import load as load_metric
 from torch.utils.data import DataLoader, Dataset
 from transformers import (
+    Adafactor,
     AutoModelForSeq2SeqLM,
     AutoTokenizer,
     get_linear_schedule_with_warmup,
@@ -51,6 +52,7 @@ class TrainConfig:
     gradient_accumulation_steps: int = 4
     learning_rate: float = 5e-5
     warmup_ratio: float = 0.1
+    optimizer: str = "adamw"  # "adamw" or "adafactor"
     weight_decay: float = 0.01
     label_smoothing: float = 0.0  # Label smoothing factor (0 = disabled)
     max_grad_norm: float = 1.0
@@ -337,7 +339,19 @@ def train(config: TrainConfig):
     )
 
     # Optimizer and scheduler
-    optimizer = torch.optim.AdamW(model.parameters(), lr=config.learning_rate, weight_decay=config.weight_decay)
+    if config.optimizer == "adafactor":
+        # Adafactor with relative step size (no external LR scheduler needed)
+        optimizer = Adafactor(
+            model.parameters(),
+            lr=config.learning_rate,
+            scale_parameter=False,
+            relative_step=False,
+            warmup_init=False,
+        )
+        logger.info(f"Using Adafactor optimizer (lr={config.learning_rate})")
+    else:
+        optimizer = torch.optim.AdamW(model.parameters(), lr=config.learning_rate, weight_decay=config.weight_decay)
+        logger.info(f"Using AdamW optimizer (lr={config.learning_rate}, wd={config.weight_decay})")
 
     total_steps = len(train_loader) * config.epochs // config.gradient_accumulation_steps
     warmup_steps = int(total_steps * config.warmup_ratio)
@@ -457,6 +471,7 @@ def parse_args():
     parser.add_argument("--lr", type=float, default=5e-5)
     parser.add_argument("--warmup-ratio", type=float, default=0.1)
     parser.add_argument("--label-smoothing", type=float, default=0.0, help="Label smoothing factor")
+    parser.add_argument("--optimizer", type=str, default="adamw", choices=["adamw", "adafactor"], help="Optimizer type")
 
     parser.add_argument("--max-source-length", type=int, default=512)
     parser.add_argument("--max-target-length", type=int, default=512)
@@ -487,6 +502,7 @@ def main():
         learning_rate=args.lr,
         warmup_ratio=args.warmup_ratio,
         label_smoothing=args.label_smoothing,
+        optimizer=args.optimizer,
         max_source_length=args.max_source_length,
         max_target_length=args.max_target_length,
         val_split=args.val_split,
