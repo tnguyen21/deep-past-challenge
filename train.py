@@ -378,6 +378,10 @@ def train(config: TrainConfig):
     best_geom_mean = 0.0
     global_step = 0
 
+    # Early stopping tracking
+    best_train_loss = float("inf")
+    epochs_without_improvement = 0
+
     # Training loop
     for epoch in range(config.epochs):
         model.train()
@@ -419,6 +423,31 @@ def train(config: TrainConfig):
         avg_loss = epoch_loss / len(train_loader)
         history["train_loss"].append(avg_loss)
         logger.info(f"Epoch {epoch + 1} - Train Loss: {avg_loss:.4f}")
+
+        # Early stopping check (based on training loss)
+        if config.patience > 0:
+            if best_train_loss - avg_loss > config.min_delta:
+                best_train_loss = avg_loss
+                epochs_without_improvement = 0
+            else:
+                epochs_without_improvement += 1
+                logger.info(f"No improvement (delta={best_train_loss - avg_loss:.4f} < {config.min_delta}). Patience: {epochs_without_improvement}/{config.patience}")
+                if epochs_without_improvement >= config.patience:
+                    logger.info(f"Early stopping triggered at epoch {epoch + 1}")
+                    # Force final evaluation before stopping
+                    eval_beams = config.final_num_beams
+                    logger.info(f"Running final evaluation with beam search (num_beams={eval_beams})...")
+                    metrics = evaluate(model, tokenizer, val_loader, config, num_beams=eval_beams)
+                    history["val_metrics"].append({"epoch": epoch + 1, "num_beams": eval_beams, **metrics})
+                    logger.info(f"Final - Val BLEU: {metrics['bleu']:.2f}, chrF++: {metrics['chrf++']:.2f}, GeomMean: {metrics['geom_mean']:.2f}")
+                    if metrics["geom_mean"] > best_geom_mean:
+                        best_geom_mean = metrics["geom_mean"]
+                        best_path = Path(config.output_dir) / config.experiment_name / "best"
+                        best_path.mkdir(parents=True, exist_ok=True)
+                        model.save_pretrained(best_path)
+                        tokenizer.save_pretrained(best_path)
+                        logger.info(f"New best model saved! GeomMean: {best_geom_mean:.2f}")
+                    break
 
         # Evaluate every N epochs or on final epoch
         is_final_epoch = epoch + 1 == config.epochs
@@ -472,6 +501,8 @@ def parse_args():
     parser.add_argument("--warmup-ratio", type=float, default=0.1)
     parser.add_argument("--label-smoothing", type=float, default=0.0, help="Label smoothing factor")
     parser.add_argument("--optimizer", type=str, default="adamw", choices=["adamw", "adafactor"], help="Optimizer type")
+    parser.add_argument("--patience", type=int, default=0, help="Early stopping patience (0=disabled). Stop if loss doesn't improve by min-delta for this many epochs")
+    parser.add_argument("--min-delta", type=float, default=0.01, help="Minimum loss improvement to reset patience")
 
     parser.add_argument("--max-source-length", type=int, default=512)
     parser.add_argument("--max-target-length", type=int, default=512)
