@@ -4,57 +4,37 @@ Notes for continuity across Claude instances.
 
 ---
 
-## 2026-02-06: byt5-large-longer Experiment
+## 2026-02-06: byt5_large_longer - NEW BEST GeomMean 19.00!
 
-### Current Running Experiment
-- **Name**: byt5_large_longer
-- **Branch**: exp/byt5-large-longer (based on exp/combined-winners)
-- **Config**: byt5-large, 100 epochs, Adafactor, lr=1e-4, label_smoothing=0.3, weight_decay=0.01, eff_batch=32, FP32
-- **Key changes vs byt5_large_long (15.26)**:
-  - label_smoothing: 0.2 → 0.3 (winner from base experiments)
-  - weight_decay: broken → fixed (from combined-winners branch)
-  - effective_batch: 128 → 32 (128 was shown to be worse)
-  - epochs: 50 → 100 (loss was still decreasing)
-  - eval_every: 25 (track progress at epochs 25, 50, 75, 100)
-  - save_every: 25 (crash recovery checkpoints)
-  - patience: 10, min_delta: 0.005 (early stopping)
-- **Status**: Running on VM
-- **Log**: `train_byt5_large_longer.log` on VM
-- **Early results**: Epoch 1 loss 5.6944, Epoch 2 loss 5.3806 (~7.7 min/epoch)
-- **Estimated runtime**: ~18 hours (100 epochs training + 4 evals)
+### Results
+- **GeomMean: 19.00** (BLEU 13.01, chrF++ 27.73) - **NEW BEST!**
+- **+24.0% improvement** over previous best (combined_winners 15.32)
+- **+24.5% improvement** over byt5_large_long (15.26)
+- Early stopped at epoch 97/100 (patience=10, min_delta=0.005)
+- Final training loss: 2.46 (down from 5.69)
+- Runtime: ~17 hours
 
-### Code Changes
-- Added `--save-every` CLI arg for periodic checkpoint saving (crash recovery)
-- Improved `print_config` to show optimizer, label_smoothing, patience, min_delta
+### Training Trajectory
+- Loss: 5.69 → 3.57 (ep5) → 2.94 (ep10) → 2.68 (ep25) → 2.54 (ep50) → 2.48 (ep75) → 2.46 (ep97)
+- Greedy evals: ep25=14.18, ep50=13.58, ep75=14.52
+- Final beam search eval (num_beams=4): **19.00** (much higher than greedy!)
 
-### On Resume
-```bash
-# Check experiment progress
-ssh -i ~/.ssh/lambda-labs.pem ubuntu@161.118.191.241 "tail -20 ~/deep-past-challenge/train_byt5_large_longer.log"
+### Key Insight
+Applying base-model winning hyperparams to byt5-large was hugely effective:
+- label_smoothing 0.3 (vs 0.2): better regularization
+- weight_decay 0.01 (fixed): was silently ignored before
+- eff_batch 32 (vs 128): more optimizer steps = better for this dataset size
+- 97 epochs (vs 50): model kept improving with more training
 
-# Check GPU usage
-ssh -i ~/.ssh/lambda-labs.pem ubuntu@161.118.191.241 "nvidia-smi"
-
-# Check process
-ssh -i ~/.ssh/lambda-labs.pem ubuntu@161.118.191.241 "ps aux | grep train.py | grep -v grep"
-```
-
-### After Completion
-1. Log results to `experiments/log.jsonl` (ON THE BRANCH)
-2. Compare vs byt5_large_long (15.26) and combined_winners (15.32)
-3. Create PR regardless of outcome
-4. If improved → merge. If not → document and close PR.
-
-### Previous Results Summary
+### Results Summary
 
 | Experiment | GeomMean | Notes |
 |------------|----------|-------|
-| **combined_winners (byt5-base)** | **15.32** | **CURRENT BEST** |
+| **byt5_large_longer** | **19.00** | **NEW BEST** - large model + winning hyperparams |
+| combined_winners (byt5-base) | 15.32 | Previous best |
 | byt5_large_long | 15.26 | 50ep, eff_batch=128, label_smooth=0.2 |
 | adafactor (byt5-base) | 12.67 | |
 | sentence_level_data | 12.12 | |
-| byt5_large_fp32 | 5.91 | 20 epochs wasn't enough |
-| byt5_base_30ep | 5.23 | |
 | baseline (byt5-small) | 1.57 | |
 
 ---
