@@ -4,6 +4,61 @@ Notes for continuity across Claude instances.
 
 ---
 
+## 2026-02-06: byt5-large-longer Experiment
+
+### Current Running Experiment
+- **Name**: byt5_large_longer
+- **Branch**: exp/byt5-large-longer (based on exp/combined-winners)
+- **Config**: byt5-large, 100 epochs, Adafactor, lr=1e-4, label_smoothing=0.3, weight_decay=0.01, eff_batch=32, FP32
+- **Key changes vs byt5_large_long (15.26)**:
+  - label_smoothing: 0.2 → 0.3 (winner from base experiments)
+  - weight_decay: broken → fixed (from combined-winners branch)
+  - effective_batch: 128 → 32 (128 was shown to be worse)
+  - epochs: 50 → 100 (loss was still decreasing)
+  - eval_every: 25 (track progress at epochs 25, 50, 75, 100)
+  - save_every: 25 (crash recovery checkpoints)
+  - patience: 10, min_delta: 0.005 (early stopping)
+- **Status**: Running on VM
+- **Log**: `train_byt5_large_longer.log` on VM
+- **Early results**: Epoch 1 loss 5.6944, Epoch 2 loss 5.3806 (~7.7 min/epoch)
+- **Estimated runtime**: ~18 hours (100 epochs training + 4 evals)
+
+### Code Changes
+- Added `--save-every` CLI arg for periodic checkpoint saving (crash recovery)
+- Improved `print_config` to show optimizer, label_smoothing, patience, min_delta
+
+### On Resume
+```bash
+# Check experiment progress
+ssh -i ~/.ssh/lambda-labs.pem ubuntu@161.118.191.241 "tail -20 ~/deep-past-challenge/train_byt5_large_longer.log"
+
+# Check GPU usage
+ssh -i ~/.ssh/lambda-labs.pem ubuntu@161.118.191.241 "nvidia-smi"
+
+# Check process
+ssh -i ~/.ssh/lambda-labs.pem ubuntu@161.118.191.241 "ps aux | grep train.py | grep -v grep"
+```
+
+### After Completion
+1. Log results to `experiments/log.jsonl` (ON THE BRANCH)
+2. Compare vs byt5_large_long (15.26) and combined_winners (15.32)
+3. Create PR regardless of outcome
+4. If improved → merge. If not → document and close PR.
+
+### Previous Results Summary
+
+| Experiment | GeomMean | Notes |
+|------------|----------|-------|
+| **combined_winners (byt5-base)** | **15.32** | **CURRENT BEST** |
+| byt5_large_long | 15.26 | 50ep, eff_batch=128, label_smooth=0.2 |
+| adafactor (byt5-base) | 12.67 | |
+| sentence_level_data | 12.12 | |
+| byt5_large_fp32 | 5.91 | 20 epochs wasn't enough |
+| byt5_base_30ep | 5.23 | |
+| baseline (byt5-small) | 1.57 | |
+
+---
+
 ## 2026-02-04: Initial Setup
 
 ### Current State
