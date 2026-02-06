@@ -395,14 +395,17 @@ def train(config: TrainConfig):
     # Optimizer and scheduler
     if config.optimizer == "adafactor":
         # Adafactor with relative step size (no external LR scheduler needed)
-        optimizer = Adafactor(
-            model.parameters(),
-            lr=config.learning_rate,
-            scale_parameter=False,
-            relative_step=False,
-            warmup_init=False,
-        )
-        logger.info(f"Using Adafactor optimizer (lr={config.learning_rate})")
+        adafactor_kwargs = {
+            "lr": config.learning_rate,
+            "scale_parameter": False,
+            "relative_step": False,
+            "warmup_init": False,
+        }
+        if config.weight_decay > 0:
+            adafactor_kwargs["weight_decay"] = config.weight_decay
+        optimizer = Adafactor(model.parameters(), **adafactor_kwargs)
+        wd_str = f", wd={config.weight_decay}" if config.weight_decay > 0 else ""
+        logger.info(f"Using Adafactor optimizer (lr={config.learning_rate}{wd_str})")
     else:
         optimizer = torch.optim.AdamW(model.parameters(), lr=config.learning_rate, weight_decay=config.weight_decay)
         logger.info(f"Using AdamW optimizer (lr={config.learning_rate}, wd={config.weight_decay})")
@@ -555,7 +558,8 @@ def parse_args():
     parser.add_argument("--warmup-ratio", type=float, default=0.1)
     parser.add_argument("--label-smoothing", type=float, default=0.0, help="Label smoothing factor")
     parser.add_argument("--optimizer", type=str, default="adamw", choices=["adamw", "adafactor"], help="Optimizer type")
-    parser.add_argument("--patience", type=int, default=0, help="Early stopping patience (0=disabled). Stop if loss doesn't improve by min-delta for this many epochs")
+    parser.add_argument("--weight-decay", type=float, default=0.01, help="Weight decay (L2 regularization)")
+    parser.add_argument("--patience", type=int, default=0, help="Early stopping patience (0=disabled)")
     parser.add_argument("--min-delta", type=float, default=0.01, help="Minimum loss improvement to reset patience")
 
     parser.add_argument("--max-source-length", type=int, default=512)
@@ -588,6 +592,7 @@ def main():
         warmup_ratio=args.warmup_ratio,
         label_smoothing=args.label_smoothing,
         optimizer=args.optimizer,
+        weight_decay=args.weight_decay,
         patience=args.patience,
         min_delta=args.min_delta,
         max_source_length=args.max_source_length,
