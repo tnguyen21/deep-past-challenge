@@ -488,9 +488,7 @@ def train(config: TrainConfig):
                 epochs_without_improvement = 0
             else:
                 epochs_without_improvement += 1
-                logger.info(
-                    f"No improvement (delta={best_train_loss - avg_loss:.4f} < {config.min_delta}). Patience: {epochs_without_improvement}/{config.patience}"
-                )
+                logger.info(f"No improvement (delta={best_train_loss - avg_loss:.4f} < {config.min_delta}). Patience: {epochs_without_improvement}/{config.patience}")
                 if epochs_without_improvement >= config.patience:
                     logger.info(f"Early stopping triggered at epoch {epoch + 1}")
                     # Force final evaluation before stopping
@@ -498,9 +496,7 @@ def train(config: TrainConfig):
                     logger.info(f"Running final evaluation with beam search (num_beams={eval_beams})...")
                     metrics = evaluate(model, tokenizer, val_loader, config, num_beams=eval_beams)
                     history["val_metrics"].append({"epoch": epoch + 1, "num_beams": eval_beams, **metrics})
-                    logger.info(
-                        f"Final - Val BLEU: {metrics['bleu']:.2f}, chrF++: {metrics['chrf++']:.2f}, GeomMean: {metrics['geom_mean']:.2f}"
-                    )
+                    logger.info(f"Final - Val BLEU: {metrics['bleu']:.2f}, chrF++: {metrics['chrf++']:.2f}, GeomMean: {metrics['geom_mean']:.2f}")
                     if metrics["geom_mean"] > best_geom_mean:
                         best_geom_mean = metrics["geom_mean"]
                         best_path = Path(config.output_dir) / config.experiment_name / "best"
