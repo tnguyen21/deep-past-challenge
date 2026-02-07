@@ -39,6 +39,52 @@ Applying base-model winning hyperparams to byt5-large was hugely effective:
 
 ---
 
+## 2026-02-07: Experiment Suite on byt5-base (12 experiments planned)
+
+### Goal
+Run systematic experiments on byt5-base to find additional improvements before scaling to larger models.
+
+### Current Status
+- **Baseline**: combined_winners (byt5-base) GeomMean 15.32
+- **Best overall**: byt5_large_longer GeomMean 19.00
+
+### Experiments In Progress
+1. **context_768** - ✅ COMPLETED
+   - GeomMean: 15.41 (BLEU 10.08, chrF++ 23.56)
+   - **vs baseline (15.32): +0.09 (+0.6%)**
+   - Small positive improvement with longer context
+   - Runtime: 2.7 hours
+
+2. **context_1024** - RUNNING (started 12:45 UTC, PID 72519)
+   - Branch: exp/context-length-sweep
+   - Testing max_source/target_length=1024 (vs 512)
+   - Expected: ~3-3.5 hours (longer sequences = slower)
+
+### Code Changes Complete ✓
+All experiment branches created and pushed:
+1. ✓ exp/context-length-sweep (in progress)
+2. ✓ exp/dropout-tuning (code ready)
+3. ✓ exp/gap-augmentation (code ready)
+4. ✓ exp/enhanced-lexicon (script ready)
+5. ✓ exp/discriminative-lr (code ready)
+6. ✓ exp/reverse-translation (code ready)
+
+### Planned Experiments (Priority Order)
+1. ✓ Context length sweep: 768, 1024 (Priority 1) - IN PROGRESS
+2. ✓ Dropout tuning: 0.1, 0.2, 0.3 (Priority 2) - CODE READY
+3. ✓ Gap augmentation: random swap <gap>/<big_gap> (Priority 3) - CODE READY
+4. ✓ Enhanced lexicon: 30%, 50% mix ratios (Priority 4) - CODE READY
+5. ✓ Discriminative LR: encoder/decoder different rates (Priority 5) - CODE READY
+6. ✓ Reverse translation: 20% en→akk examples (Priority 6) - CODE READY
+
+### Next Steps After context_768 Completes
+1. Log results to experiments/log.jsonl ON THIS BRANCH
+2. Start context_1024 experiment
+3. After both complete, create PR with results
+4. Move to Priority 2 (dropout tuning)
+
+---
+
 ## 2026-02-04: Initial Setup
 
 ### byt5_large_long - NEW BEST! ✓
