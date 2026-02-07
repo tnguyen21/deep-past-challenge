@@ -72,7 +72,7 @@ class TrainConfig:
 
     # Misc
     seed: int = 42
-    save_every: int = 1
+    save_every: int = 0  # Save periodic checkpoints every N epochs (0 = disabled)
     eval_every: int = 0  # Evaluate every N epochs (0 = only final epoch)
     num_workers: int = 4  # Parallel data loading
     use_amp: bool = True  # Use automatic mixed precision (BF16 on CUDA, disabled elsewhere)
@@ -288,8 +288,12 @@ def print_config(config: TrainConfig):
         f"  effective_batch:  {config.batch_size * config.gradient_accumulation_steps}",
         f"  learning_rate:    {config.learning_rate}",
         f"  warmup_ratio:     {config.warmup_ratio}",
+        f"  optimizer:        {config.optimizer}",
         f"  weight_decay:     {config.weight_decay}",
+        f"  label_smoothing:  {config.label_smoothing}",
         f"  max_grad_norm:    {config.max_grad_norm}",
+        f"  patience:         {config.patience or 'disabled'}",
+        f"  min_delta:        {config.min_delta}",
         "",
         "Data:",
         f"  max_source_len:   {config.max_source_length}",
@@ -481,6 +485,14 @@ def train(config: TrainConfig):
         history["train_loss"].append(avg_loss)
         logger.info(f"Epoch {epoch + 1} - Train Loss: {avg_loss:.4f}")
 
+        # Periodic checkpoint for crash recovery
+        if config.save_every > 0 and (epoch + 1) % config.save_every == 0:
+            ckpt_path = Path(config.output_dir) / config.experiment_name / f"epoch_{epoch + 1}"
+            ckpt_path.mkdir(parents=True, exist_ok=True)
+            model.save_pretrained(ckpt_path)
+            tokenizer.save_pretrained(ckpt_path)
+            logger.info(f"Periodic checkpoint saved to {ckpt_path}")
+
         # Early stopping check (based on training loss)
         if config.patience > 0:
             if best_train_loss - avg_loss > config.min_delta:
@@ -569,6 +581,7 @@ def parse_args():
     parser.add_argument("--num-beams", type=int, default=1, help="Beam count for intermediate evals (1=greedy)")
     parser.add_argument("--final-num-beams", type=int, default=4, help="Beam count for final epoch eval")
     parser.add_argument("--eval-every", type=int, default=0, help="Evaluate every N epochs (0 = only final)")
+    parser.add_argument("--save-every", type=int, default=0, help="Save checkpoint every N epochs (0=disabled)")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--num-workers", type=int, default=0)
     parser.add_argument("--no-amp", action="store_true", help="Disable automatic mixed precision")
@@ -601,6 +614,7 @@ def main():
         num_beams=args.num_beams,
         final_num_beams=args.final_num_beams,
         eval_every=args.eval_every,
+        save_every=args.save_every,
         seed=args.seed,
         num_workers=args.num_workers,
         use_amp=not args.no_amp,

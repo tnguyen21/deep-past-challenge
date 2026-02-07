@@ -4,7 +4,42 @@ Notes for continuity across Claude instances.
 
 ---
 
-## 2026-02-05: Phase 2 Progress - NEW BEST RESULT!
+## 2026-02-06: byt5_large_longer - NEW BEST GeomMean 19.00!
+
+### Results
+- **GeomMean: 19.00** (BLEU 13.01, chrF++ 27.73) - **NEW BEST!**
+- **+24.0% improvement** over previous best (combined_winners 15.32)
+- **+24.5% improvement** over byt5_large_long (15.26)
+- Early stopped at epoch 97/100 (patience=10, min_delta=0.005)
+- Final training loss: 2.46 (down from 5.69)
+- Runtime: ~17 hours
+
+### Training Trajectory
+- Loss: 5.69 → 3.57 (ep5) → 2.94 (ep10) → 2.68 (ep25) → 2.54 (ep50) → 2.48 (ep75) → 2.46 (ep97)
+- Greedy evals: ep25=14.18, ep50=13.58, ep75=14.52
+- Final beam search eval (num_beams=4): **19.00** (much higher than greedy!)
+
+### Key Insight
+Applying base-model winning hyperparams to byt5-large was hugely effective:
+- label_smoothing 0.3 (vs 0.2): better regularization
+- weight_decay 0.01 (fixed): was silently ignored before
+- eff_batch 32 (vs 128): more optimizer steps = better for this dataset size
+- 97 epochs (vs 50): model kept improving with more training
+
+### Results Summary
+
+| Experiment | GeomMean | Notes |
+|------------|----------|-------|
+| **byt5_large_longer** | **19.00** | **NEW BEST** - large model + winning hyperparams |
+| combined_winners (byt5-base) | 15.32 | Previous best |
+| byt5_large_long | 15.26 | 50ep, eff_batch=128, label_smooth=0.2 |
+| adafactor (byt5-base) | 12.67 | |
+| sentence_level_data | 12.12 | |
+| baseline (byt5-small) | 1.57 | |
+
+---
+
+## 2026-02-04: Initial Setup
 
 ### byt5_large_long - NEW BEST! ✓
 - **GeomMean: 15.26** (BLEU 9.85, chrF++ 23.66)
