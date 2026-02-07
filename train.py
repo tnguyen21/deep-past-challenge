@@ -7,6 +7,7 @@ import argparse
 import json
 import logging
 import os
+import random
 import re
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -63,6 +64,7 @@ class TrainConfig:
     max_source_length: int = 512
     max_target_length: int = 512
     val_split: float = 0.1
+    augment_gaps: bool = False  # Randomly swap gap tokens for augmentation
 
     # Generation (for validation)
     num_beams: int = 1  # Use greedy decoding for intermediate evals (fast iteration)
@@ -107,9 +109,9 @@ class TrainConfig:
 
 
 class AkkadianDataset(Dataset):
-    def __init__(self, df: pd.DataFrame, tokenizer, max_source_length: int, max_target_length: int):
-        # Preprocess sources
-        sources = [self._preprocess_source(t) for t in df["transliteration"].tolist()]
+    def __init__(self, df: pd.DataFrame, tokenizer, max_source_length: int, max_target_length: int, augment_gaps: bool = False):
+        # Preprocess sources with optional gap augmentation
+        sources = [self._preprocess_source(t, augment_gaps) for t in df["transliteration"].tolist()]
         targets = df["translation"].tolist()
 
         # Pre-tokenize everything once (much faster than tokenizing per __getitem__)
@@ -134,13 +136,21 @@ class AkkadianDataset(Dataset):
         self.labels = target_enc.input_ids.clone()
         self.labels[self.labels == tokenizer.pad_token_id] = -100
 
-    def _preprocess_source(self, text: str) -> str:
+    def _preprocess_source(self, text: str, augment_gaps: bool = False) -> str:
         if pd.isna(text):
             return ""
         text = str(text)
         # Normalize gaps
         text = re.sub(r"(\.{3,}|…+|……)", "<big_gap>", text)
         text = re.sub(r"(xx+|\s+x\s+)", "<gap>", text)
+
+        # Gap augmentation: randomly swap gap types
+        if augment_gaps and random.random() < 0.5:
+            # Swap gap and big_gap
+            text = text.replace("<gap>", "<TEMP>")
+            text = text.replace("<big_gap>", "<gap>")
+            text = text.replace("<TEMP>", "<big_gap>")
+
         return "translate Akkadian to English: " + text
 
     def __len__(self):
@@ -376,8 +386,8 @@ def train(config: TrainConfig):
         model = torch.compile(model)
 
     # Create datasets
-    train_dataset = AkkadianDataset(train_df, tokenizer, config.max_source_length, config.max_target_length)
-    val_dataset = AkkadianDataset(val_df, tokenizer, config.max_source_length, config.max_target_length)
+    train_dataset = AkkadianDataset(train_df, tokenizer, config.max_source_length, config.max_target_length, config.augment_gaps)
+    val_dataset = AkkadianDataset(val_df, tokenizer, config.max_source_length, config.max_target_length, augment_gaps=False)
 
     train_loader = DataLoader(
         train_dataset,
@@ -500,7 +510,9 @@ def train(config: TrainConfig):
                 epochs_without_improvement = 0
             else:
                 epochs_without_improvement += 1
-                logger.info(f"No improvement (delta={best_train_loss - avg_loss:.4f} < {config.min_delta}). Patience: {epochs_without_improvement}/{config.patience}")
+                logger.info(
+                    f"No improvement (delta={best_train_loss - avg_loss:.4f} < {config.min_delta}). Patience: {epochs_without_improvement}/{config.patience}"
+                )
                 if epochs_without_improvement >= config.patience:
                     logger.info(f"Early stopping triggered at epoch {epoch + 1}")
                     # Force final evaluation before stopping
@@ -508,7 +520,9 @@ def train(config: TrainConfig):
                     logger.info(f"Running final evaluation with beam search (num_beams={eval_beams})...")
                     metrics = evaluate(model, tokenizer, val_loader, config, num_beams=eval_beams)
                     history["val_metrics"].append({"epoch": epoch + 1, "num_beams": eval_beams, **metrics})
-                    logger.info(f"Final - Val BLEU: {metrics['bleu']:.2f}, chrF++: {metrics['chrf++']:.2f}, GeomMean: {metrics['geom_mean']:.2f}")
+                    logger.info(
+                        f"Final - Val BLEU: {metrics['bleu']:.2f}, chrF++: {metrics['chrf++']:.2f}, GeomMean: {metrics['geom_mean']:.2f}"
+                    )
                     if metrics["geom_mean"] > best_geom_mean:
                         best_geom_mean = metrics["geom_mean"]
                         best_path = Path(config.output_dir) / config.experiment_name / "best"
@@ -577,6 +591,7 @@ def parse_args():
     parser.add_argument("--max-source-length", type=int, default=512)
     parser.add_argument("--max-target-length", type=int, default=512)
     parser.add_argument("--val-split", type=float, default=0.1)
+    parser.add_argument("--augment-gaps", action="store_true", help="Randomly swap gap tokens for augmentation")
 
     parser.add_argument("--num-beams", type=int, default=1, help="Beam count for intermediate evals (1=greedy)")
     parser.add_argument("--final-num-beams", type=int, default=4, help="Beam count for final epoch eval")
@@ -611,6 +626,7 @@ def main():
         max_source_length=args.max_source_length,
         max_target_length=args.max_target_length,
         val_split=args.val_split,
+        augment_gaps=args.augment_gaps,
         num_beams=args.num_beams,
         final_num_beams=args.final_num_beams,
         eval_every=args.eval_every,
