@@ -37,6 +37,49 @@ torch.backends.cudnn.benchmark = True  # Optimize for consistent input sizes
 torch.set_float32_matmul_precision("medium")  # Enable TF32 for matmuls
 
 
+def create_discriminative_optimizer(model, config):
+    """Create optimizer with different LRs for encoder/decoder."""
+    encoder_params = []
+    decoder_params = []
+    other_params = []
+
+    for name, param in model.named_parameters():
+        if not param.requires_grad:
+            continue
+        if "encoder" in name:
+            encoder_params.append(param)
+        elif "decoder" in name:
+            decoder_params.append(param)
+        else:
+            other_params.append(param)
+
+    param_groups = [
+        {"params": encoder_params, "lr": config.learning_rate * config.encoder_lr_multiplier},
+        {"params": decoder_params, "lr": config.learning_rate * config.decoder_lr_multiplier},
+        {"params": other_params, "lr": config.learning_rate},
+    ]
+
+    if config.optimizer == "adafactor":
+        adafactor_kwargs = {
+            "scale_parameter": False,
+            "relative_step": False,
+            "warmup_init": False,
+        }
+        if config.weight_decay > 0:
+            adafactor_kwargs["weight_decay"] = config.weight_decay
+        optimizer = Adafactor(param_groups, **adafactor_kwargs)
+        logger.info(
+            f"Adafactor with discriminative LR: encoder={config.learning_rate * config.encoder_lr_multiplier}, decoder={config.learning_rate * config.decoder_lr_multiplier}"
+        )
+    else:
+        optimizer = torch.optim.AdamW(param_groups, weight_decay=config.weight_decay)
+        logger.info(
+            f"AdamW with discriminative LR: encoder={config.learning_rate * config.encoder_lr_multiplier}, decoder={config.learning_rate * config.decoder_lr_multiplier}"
+        )
+
+    return optimizer
+
+
 @dataclass
 class TrainConfig:
     # Paths
@@ -52,6 +95,8 @@ class TrainConfig:
     gradient_accumulation_steps: int = 4
     learning_rate: float = 5e-5
     warmup_ratio: float = 0.1
+    encoder_lr_multiplier: float = 1.0  # Encoder LR = base_lr * this
+    decoder_lr_multiplier: float = 1.0  # Decoder LR = base_lr * this
     optimizer: str = "adamw"  # "adamw" or "adafactor"
     weight_decay: float = 0.01
     label_smoothing: float = 0.0  # Label smoothing factor (0 = disabled)
@@ -397,22 +442,27 @@ def train(config: TrainConfig):
     )
 
     # Optimizer and scheduler
-    if config.optimizer == "adafactor":
-        # Adafactor with relative step size (no external LR scheduler needed)
-        adafactor_kwargs = {
-            "lr": config.learning_rate,
-            "scale_parameter": False,
-            "relative_step": False,
-            "warmup_init": False,
-        }
-        if config.weight_decay > 0:
-            adafactor_kwargs["weight_decay"] = config.weight_decay
-        optimizer = Adafactor(model.parameters(), **adafactor_kwargs)
-        wd_str = f", wd={config.weight_decay}" if config.weight_decay > 0 else ""
-        logger.info(f"Using Adafactor optimizer (lr={config.learning_rate}{wd_str})")
+    if config.encoder_lr_multiplier != 1.0 or config.decoder_lr_multiplier != 1.0:
+        # Discriminative learning rates
+        optimizer = create_discriminative_optimizer(model, config)
     else:
-        optimizer = torch.optim.AdamW(model.parameters(), lr=config.learning_rate, weight_decay=config.weight_decay)
-        logger.info(f"Using AdamW optimizer (lr={config.learning_rate}, wd={config.weight_decay})")
+        # Standard optimizer (keep existing code)
+        if config.optimizer == "adafactor":
+            # Adafactor with relative step size (no external LR scheduler needed)
+            adafactor_kwargs = {
+                "lr": config.learning_rate,
+                "scale_parameter": False,
+                "relative_step": False,
+                "warmup_init": False,
+            }
+            if config.weight_decay > 0:
+                adafactor_kwargs["weight_decay"] = config.weight_decay
+            optimizer = Adafactor(model.parameters(), **adafactor_kwargs)
+            wd_str = f", wd={config.weight_decay}" if config.weight_decay > 0 else ""
+            logger.info(f"Using Adafactor optimizer (lr={config.learning_rate}{wd_str})")
+        else:
+            optimizer = torch.optim.AdamW(model.parameters(), lr=config.learning_rate, weight_decay=config.weight_decay)
+            logger.info(f"Using AdamW optimizer (lr={config.learning_rate}, wd={config.weight_decay})")
 
     total_steps = len(train_loader) * config.epochs // config.gradient_accumulation_steps
     warmup_steps = int(total_steps * config.warmup_ratio)
@@ -500,7 +550,9 @@ def train(config: TrainConfig):
                 epochs_without_improvement = 0
             else:
                 epochs_without_improvement += 1
-                logger.info(f"No improvement (delta={best_train_loss - avg_loss:.4f} < {config.min_delta}). Patience: {epochs_without_improvement}/{config.patience}")
+                logger.info(
+                    f"No improvement (delta={best_train_loss - avg_loss:.4f} < {config.min_delta}). Patience: {epochs_without_improvement}/{config.patience}"
+                )
                 if epochs_without_improvement >= config.patience:
                     logger.info(f"Early stopping triggered at epoch {epoch + 1}")
                     # Force final evaluation before stopping
@@ -508,7 +560,9 @@ def train(config: TrainConfig):
                     logger.info(f"Running final evaluation with beam search (num_beams={eval_beams})...")
                     metrics = evaluate(model, tokenizer, val_loader, config, num_beams=eval_beams)
                     history["val_metrics"].append({"epoch": epoch + 1, "num_beams": eval_beams, **metrics})
-                    logger.info(f"Final - Val BLEU: {metrics['bleu']:.2f}, chrF++: {metrics['chrf++']:.2f}, GeomMean: {metrics['geom_mean']:.2f}")
+                    logger.info(
+                        f"Final - Val BLEU: {metrics['bleu']:.2f}, chrF++: {metrics['chrf++']:.2f}, GeomMean: {metrics['geom_mean']:.2f}"
+                    )
                     if metrics["geom_mean"] > best_geom_mean:
                         best_geom_mean = metrics["geom_mean"]
                         best_path = Path(config.output_dir) / config.experiment_name / "best"
@@ -568,6 +622,8 @@ def parse_args():
     parser.add_argument("--grad-accum", type=int, default=4)
     parser.add_argument("--lr", type=float, default=5e-5)
     parser.add_argument("--warmup-ratio", type=float, default=0.1)
+    parser.add_argument("--encoder-lr-mult", type=float, default=1.0, help="Encoder LR multiplier")
+    parser.add_argument("--decoder-lr-mult", type=float, default=1.0, help="Decoder LR multiplier")
     parser.add_argument("--label-smoothing", type=float, default=0.0, help="Label smoothing factor")
     parser.add_argument("--optimizer", type=str, default="adamw", choices=["adamw", "adafactor"], help="Optimizer type")
     parser.add_argument("--weight-decay", type=float, default=0.01, help="Weight decay (L2 regularization)")
@@ -603,6 +659,8 @@ def main():
         gradient_accumulation_steps=args.grad_accum,
         learning_rate=args.lr,
         warmup_ratio=args.warmup_ratio,
+        encoder_lr_multiplier=args.encoder_lr_mult,
+        decoder_lr_multiplier=args.decoder_lr_mult,
         label_smoothing=args.label_smoothing,
         optimizer=args.optimizer,
         weight_decay=args.weight_decay,
