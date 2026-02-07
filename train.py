@@ -55,6 +55,7 @@ class TrainConfig:
     optimizer: str = "adamw"  # "adamw" or "adafactor"
     weight_decay: float = 0.01
     label_smoothing: float = 0.0  # Label smoothing factor (0 = disabled)
+    dropout_rate: float = 0.0  # Model dropout (0 = use model default)
     max_grad_norm: float = 1.0
     patience: int = 0  # Early stopping patience (0 = disabled)
     min_delta: float = 0.01  # Minimum loss improvement to reset patience
@@ -354,6 +355,14 @@ def train(config: TrainConfig):
     model = AutoModelForSeq2SeqLM.from_pretrained(config.model_name)
     model = model.to(config.device)
 
+    # Apply dropout if specified
+    if config.dropout_rate > 0:
+        model.config.dropout_rate = config.dropout_rate
+        # Also update attention dropout for T5 models
+        if hasattr(model.config, "dropout"):
+            model.config.dropout = config.dropout_rate
+        logger.info(f"Set model dropout_rate to {config.dropout_rate}")
+
     num_params = sum(p.numel() for p in model.parameters())
     logger.info(f"Model parameters: {num_params:,}")
 
@@ -500,7 +509,9 @@ def train(config: TrainConfig):
                 epochs_without_improvement = 0
             else:
                 epochs_without_improvement += 1
-                logger.info(f"No improvement (delta={best_train_loss - avg_loss:.4f} < {config.min_delta}). Patience: {epochs_without_improvement}/{config.patience}")
+                logger.info(
+                    f"No improvement (delta={best_train_loss - avg_loss:.4f} < {config.min_delta}). Patience: {epochs_without_improvement}/{config.patience}"
+                )
                 if epochs_without_improvement >= config.patience:
                     logger.info(f"Early stopping triggered at epoch {epoch + 1}")
                     # Force final evaluation before stopping
@@ -508,7 +519,9 @@ def train(config: TrainConfig):
                     logger.info(f"Running final evaluation with beam search (num_beams={eval_beams})...")
                     metrics = evaluate(model, tokenizer, val_loader, config, num_beams=eval_beams)
                     history["val_metrics"].append({"epoch": epoch + 1, "num_beams": eval_beams, **metrics})
-                    logger.info(f"Final - Val BLEU: {metrics['bleu']:.2f}, chrF++: {metrics['chrf++']:.2f}, GeomMean: {metrics['geom_mean']:.2f}")
+                    logger.info(
+                        f"Final - Val BLEU: {metrics['bleu']:.2f}, chrF++: {metrics['chrf++']:.2f}, GeomMean: {metrics['geom_mean']:.2f}"
+                    )
                     if metrics["geom_mean"] > best_geom_mean:
                         best_geom_mean = metrics["geom_mean"]
                         best_path = Path(config.output_dir) / config.experiment_name / "best"
@@ -569,6 +582,7 @@ def parse_args():
     parser.add_argument("--lr", type=float, default=5e-5)
     parser.add_argument("--warmup-ratio", type=float, default=0.1)
     parser.add_argument("--label-smoothing", type=float, default=0.0, help="Label smoothing factor")
+    parser.add_argument("--dropout", type=float, default=0.0, help="Model dropout rate (0 = default)")
     parser.add_argument("--optimizer", type=str, default="adamw", choices=["adamw", "adafactor"], help="Optimizer type")
     parser.add_argument("--weight-decay", type=float, default=0.01, help="Weight decay (L2 regularization)")
     parser.add_argument("--patience", type=int, default=0, help="Early stopping patience (0=disabled)")
@@ -604,6 +618,7 @@ def main():
         learning_rate=args.lr,
         warmup_ratio=args.warmup_ratio,
         label_smoothing=args.label_smoothing,
+        dropout_rate=args.dropout,
         optimizer=args.optimizer,
         weight_decay=args.weight_decay,
         patience=args.patience,
