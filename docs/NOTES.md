@@ -48,17 +48,23 @@ Run systematic experiments on byt5-base to find additional improvements before s
 - **Baseline**: combined_winners (byt5-base) GeomMean 15.32
 - **Best overall**: byt5_large_longer GeomMean 19.00
 
-### Experiments In Progress
-1. **context_768** - ✅ COMPLETED
-   - GeomMean: 15.41 (BLEU 10.08, chrF++ 23.56)
+### Completed Experiments (Priority 1: Context Length Sweep)
+
+**PR #18 created:** https://github.com/tnguyen21/deep-past-challenge/pull/18
+
+1. **context_768** - ✅ BEST
+   - GeomMean: **15.41** (BLEU 10.08, chrF++ 23.56)
    - **vs baseline (15.32): +0.09 (+0.6%)**
-   - Small positive improvement with longer context
    - Runtime: 2.7 hours
 
-2. **context_1024** - RUNNING (started 12:45 UTC, PID 72519)
-   - Branch: exp/context-length-sweep
-   - Testing max_source/target_length=1024 (vs 512)
-   - Expected: ~3-3.5 hours (longer sequences = slower)
+2. **context_1024** - ✅ COMPLETED
+   - GeomMean: 15.39 (BLEU 10.08, chrF++ 23.50)
+   - **vs baseline (15.32): +0.07 (+0.5%)**
+   - Runtime: 4.2 hours
+   - Conclusion: 768 is the sweet spot
+
+### Key Finding
+**Optimal context length: 768** - provides best balance of performance and efficiency. Recommend using 768 for future experiments.
 
 ### Code Changes Complete ✓
 All experiment branches created and pushed:
