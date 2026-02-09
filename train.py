@@ -7,6 +7,7 @@ import argparse
 import json
 import logging
 import os
+import random
 import re
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -64,6 +65,7 @@ class TrainConfig:
     max_source_length: int = 512
     max_target_length: int = 512
     val_split: float = 0.1
+    augment_gaps: bool = False  # Randomly swap gap tokens for augmentation
 
     # Generation (for validation)
     num_beams: int = 1  # Use greedy decoding for intermediate evals (fast iteration)
@@ -108,9 +110,9 @@ class TrainConfig:
 
 
 class AkkadianDataset(Dataset):
-    def __init__(self, df: pd.DataFrame, tokenizer, max_source_length: int, max_target_length: int):
-        # Preprocess sources
-        sources = [self._preprocess_source(t) for t in df["transliteration"].tolist()]
+    def __init__(self, df: pd.DataFrame, tokenizer, max_source_length: int, max_target_length: int, augment_gaps: bool = False):
+        # Preprocess sources with optional gap augmentation
+        sources = [self._preprocess_source(t, augment_gaps) for t in df["transliteration"].tolist()]
         targets = df["translation"].tolist()
 
         # Pre-tokenize everything once (much faster than tokenizing per __getitem__)
@@ -135,13 +137,21 @@ class AkkadianDataset(Dataset):
         self.labels = target_enc.input_ids.clone()
         self.labels[self.labels == tokenizer.pad_token_id] = -100
 
-    def _preprocess_source(self, text: str) -> str:
+    def _preprocess_source(self, text: str, augment_gaps: bool = False) -> str:
         if pd.isna(text):
             return ""
         text = str(text)
         # Normalize gaps
         text = re.sub(r"(\.{3,}|…+|……)", "<big_gap>", text)
         text = re.sub(r"(xx+|\s+x\s+)", "<gap>", text)
+
+        # Gap augmentation: randomly swap gap types
+        if augment_gaps and random.random() < 0.5:
+            # Swap gap and big_gap
+            text = text.replace("<gap>", "<TEMP>")
+            text = text.replace("<big_gap>", "<gap>")
+            text = text.replace("<TEMP>", "<big_gap>")
+
         return "translate Akkadian to English: " + text
 
     def __len__(self):
@@ -385,8 +395,8 @@ def train(config: TrainConfig):
         model = torch.compile(model)
 
     # Create datasets
-    train_dataset = AkkadianDataset(train_df, tokenizer, config.max_source_length, config.max_target_length)
-    val_dataset = AkkadianDataset(val_df, tokenizer, config.max_source_length, config.max_target_length)
+    train_dataset = AkkadianDataset(train_df, tokenizer, config.max_source_length, config.max_target_length, config.augment_gaps)
+    val_dataset = AkkadianDataset(val_df, tokenizer, config.max_source_length, config.max_target_length, augment_gaps=False)
 
     train_loader = DataLoader(
         train_dataset,
@@ -591,6 +601,7 @@ def parse_args():
     parser.add_argument("--max-source-length", type=int, default=512)
     parser.add_argument("--max-target-length", type=int, default=512)
     parser.add_argument("--val-split", type=float, default=0.1)
+    parser.add_argument("--augment-gaps", action="store_true", help="Randomly swap gap tokens for augmentation")
 
     parser.add_argument("--num-beams", type=int, default=1, help="Beam count for intermediate evals (1=greedy)")
     parser.add_argument("--final-num-beams", type=int, default=4, help="Beam count for final epoch eval")
@@ -626,6 +637,7 @@ def main():
         max_source_length=args.max_source_length,
         max_target_length=args.max_target_length,
         val_split=args.val_split,
+        augment_gaps=args.augment_gaps,
         num_beams=args.num_beams,
         final_num_beams=args.final_num_beams,
         eval_every=args.eval_every,
