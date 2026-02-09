@@ -14,8 +14,9 @@ def load_dictionary(path: str) -> list[dict]:
     pairs = []
 
     for _, row in df.iterrows():
-        lemma = row.get("lemma", row.get("Lemma", None))
-        english = row.get("english", row.get("English", None))
+        # Try multiple column name variations
+        lemma = row.get("word", row.get("lemma", row.get("Lemma", None)))
+        english = row.get("definition", row.get("english", row.get("English", None)))
 
         if pd.isna(lemma) or pd.isna(english):
             continue
