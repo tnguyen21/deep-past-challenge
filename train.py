@@ -66,6 +66,7 @@ class TrainConfig:
     max_target_length: int = 512
     val_split: float = 0.1
     augment_gaps: bool = False  # Randomly swap gap tokens for augmentation
+    reverse_task_ratio: float = 0.0  # Ratio of reverse (en→akk) examples (0 = disabled)
 
     # Generation (for validation)
     num_beams: int = 1  # Use greedy decoding for intermediate evals (fast iteration)
@@ -110,13 +111,26 @@ class TrainConfig:
 
 
 class AkkadianDataset(Dataset):
-    def __init__(self, df: pd.DataFrame, tokenizer, max_source_length: int, max_target_length: int, augment_gaps: bool = False):
-        # Preprocess sources with optional gap augmentation
-        sources = [self._preprocess_source(t, augment_gaps) for t in df["transliteration"].tolist()]
-        targets = df["translation"].tolist()
+    def __init__(self, df: pd.DataFrame, tokenizer, max_source_length: int, max_target_length: int, augment_gaps: bool = False, reverse_ratio: float = 0.0):
+        # Preprocess sources - handle forward task, reverse task, and gap augmentation
+        sources = []
+        targets = []
+
+        for idx, row in enumerate(df.itertuples()):
+            if reverse_ratio > 0 and random.random() < reverse_ratio:
+                # Reverse: English → Akkadian
+                src = f"translate English to Akkadian: {row.translation}"
+                tgt = row.transliteration
+            else:
+                # Forward: Akkadian → English (with optional gap augmentation)
+                src = self._preprocess_source(row.transliteration, augment_gaps)
+                tgt = row.translation
+
+            sources.append(src)
+            targets.append(tgt)
 
         # Pre-tokenize everything once (much faster than tokenizing per __getitem__)
-        logger.info(f"Pre-tokenizing {len(sources)} samples...")
+        logger.info(f"Pre-tokenizing {len(sources)} samples (augment_gaps={augment_gaps}, reverse_ratio={reverse_ratio})...")
         source_enc = tokenizer(
             sources,
             max_length=max_source_length,
@@ -395,8 +409,8 @@ def train(config: TrainConfig):
         model = torch.compile(model)
 
     # Create datasets
-    train_dataset = AkkadianDataset(train_df, tokenizer, config.max_source_length, config.max_target_length, config.augment_gaps)
-    val_dataset = AkkadianDataset(val_df, tokenizer, config.max_source_length, config.max_target_length, augment_gaps=False)
+    train_dataset = AkkadianDataset(train_df, tokenizer, config.max_source_length, config.max_target_length, config.augment_gaps, config.reverse_task_ratio)
+    val_dataset = AkkadianDataset(val_df, tokenizer, config.max_source_length, config.max_target_length, augment_gaps=False, reverse_ratio=0.0)
 
     train_loader = DataLoader(
         train_dataset,
@@ -602,6 +616,7 @@ def parse_args():
     parser.add_argument("--max-target-length", type=int, default=512)
     parser.add_argument("--val-split", type=float, default=0.1)
     parser.add_argument("--augment-gaps", action="store_true", help="Randomly swap gap tokens for augmentation")
+    parser.add_argument("--reverse-task-ratio", type=float, default=0.0, help="Ratio of reverse (en->akk) examples (0-1)")
 
     parser.add_argument("--num-beams", type=int, default=1, help="Beam count for intermediate evals (1=greedy)")
     parser.add_argument("--final-num-beams", type=int, default=4, help="Beam count for final epoch eval")
@@ -638,6 +653,7 @@ def main():
         max_target_length=args.max_target_length,
         val_split=args.val_split,
         augment_gaps=args.augment_gaps,
+        reverse_task_ratio=args.reverse_task_ratio,
         num_beams=args.num_beams,
         final_num_beams=args.final_num_beams,
         eval_every=args.eval_every,
