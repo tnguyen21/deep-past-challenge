@@ -7,6 +7,7 @@ import argparse
 import json
 import logging
 import os
+import random
 import re
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -100,6 +101,7 @@ class TrainConfig:
     optimizer: str = "adamw"  # "adamw" or "adafactor"
     weight_decay: float = 0.01
     label_smoothing: float = 0.0  # Label smoothing factor (0 = disabled)
+    dropout_rate: float = 0.0  # Model dropout (0 = use model default)
     max_grad_norm: float = 1.0
     patience: int = 0  # Early stopping patience (0 = disabled)
     min_delta: float = 0.01  # Minimum loss improvement to reset patience
@@ -108,6 +110,8 @@ class TrainConfig:
     max_source_length: int = 512
     max_target_length: int = 512
     val_split: float = 0.1
+    augment_gaps: bool = False  # Randomly swap gap tokens for augmentation
+    reverse_task_ratio: float = 0.0  # Ratio of reverse (en→akk) examples (0 = disabled)
 
     # Generation (for validation)
     num_beams: int = 1  # Use greedy decoding for intermediate evals (fast iteration)
@@ -152,13 +156,26 @@ class TrainConfig:
 
 
 class AkkadianDataset(Dataset):
-    def __init__(self, df: pd.DataFrame, tokenizer, max_source_length: int, max_target_length: int):
-        # Preprocess sources
-        sources = [self._preprocess_source(t) for t in df["transliteration"].tolist()]
-        targets = df["translation"].tolist()
+    def __init__(self, df: pd.DataFrame, tokenizer, max_source_length: int, max_target_length: int, augment_gaps: bool = False, reverse_ratio: float = 0.0):
+        # Preprocess sources - handle forward task, reverse task, and gap augmentation
+        sources = []
+        targets = []
+
+        for idx, row in enumerate(df.itertuples()):
+            if reverse_ratio > 0 and random.random() < reverse_ratio:
+                # Reverse: English → Akkadian
+                src = f"translate English to Akkadian: {row.translation}"
+                tgt = row.transliteration
+            else:
+                # Forward: Akkadian → English (with optional gap augmentation)
+                src = self._preprocess_source(row.transliteration, augment_gaps)
+                tgt = row.translation
+
+            sources.append(src)
+            targets.append(tgt)
 
         # Pre-tokenize everything once (much faster than tokenizing per __getitem__)
-        logger.info(f"Pre-tokenizing {len(sources)} samples...")
+        logger.info(f"Pre-tokenizing {len(sources)} samples (augment_gaps={augment_gaps}, reverse_ratio={reverse_ratio})...")
         source_enc = tokenizer(
             sources,
             max_length=max_source_length,
@@ -179,13 +196,21 @@ class AkkadianDataset(Dataset):
         self.labels = target_enc.input_ids.clone()
         self.labels[self.labels == tokenizer.pad_token_id] = -100
 
-    def _preprocess_source(self, text: str) -> str:
+    def _preprocess_source(self, text: str, augment_gaps: bool = False) -> str:
         if pd.isna(text):
             return ""
         text = str(text)
         # Normalize gaps
         text = re.sub(r"(\.{3,}|…+|……)", "<big_gap>", text)
         text = re.sub(r"(xx+|\s+x\s+)", "<gap>", text)
+
+        # Gap augmentation: randomly swap gap types
+        if augment_gaps and random.random() < 0.5:
+            # Swap gap and big_gap
+            text = text.replace("<gap>", "<TEMP>")
+            text = text.replace("<big_gap>", "<gap>")
+            text = text.replace("<TEMP>", "<big_gap>")
+
         return "translate Akkadian to English: " + text
 
     def __len__(self):
@@ -399,6 +424,14 @@ def train(config: TrainConfig):
     model = AutoModelForSeq2SeqLM.from_pretrained(config.model_name)
     model = model.to(config.device)
 
+    # Apply dropout if specified
+    if config.dropout_rate > 0:
+        model.config.dropout_rate = config.dropout_rate
+        # Also update attention dropout for T5 models
+        if hasattr(model.config, "dropout"):
+            model.config.dropout = config.dropout_rate
+        logger.info(f"Set model dropout_rate to {config.dropout_rate}")
+
     num_params = sum(p.numel() for p in model.parameters())
     logger.info(f"Model parameters: {num_params:,}")
 
@@ -421,8 +454,8 @@ def train(config: TrainConfig):
         model = torch.compile(model)
 
     # Create datasets
-    train_dataset = AkkadianDataset(train_df, tokenizer, config.max_source_length, config.max_target_length)
-    val_dataset = AkkadianDataset(val_df, tokenizer, config.max_source_length, config.max_target_length)
+    train_dataset = AkkadianDataset(train_df, tokenizer, config.max_source_length, config.max_target_length, config.augment_gaps, config.reverse_task_ratio)
+    val_dataset = AkkadianDataset(val_df, tokenizer, config.max_source_length, config.max_target_length, augment_gaps=False, reverse_ratio=0.0)
 
     train_loader = DataLoader(
         train_dataset,
@@ -625,6 +658,7 @@ def parse_args():
     parser.add_argument("--encoder-lr-mult", type=float, default=1.0, help="Encoder LR multiplier")
     parser.add_argument("--decoder-lr-mult", type=float, default=1.0, help="Decoder LR multiplier")
     parser.add_argument("--label-smoothing", type=float, default=0.0, help="Label smoothing factor")
+    parser.add_argument("--dropout", type=float, default=0.0, help="Model dropout rate (0 = default)")
     parser.add_argument("--optimizer", type=str, default="adamw", choices=["adamw", "adafactor"], help="Optimizer type")
     parser.add_argument("--weight-decay", type=float, default=0.01, help="Weight decay (L2 regularization)")
     parser.add_argument("--patience", type=int, default=0, help="Early stopping patience (0=disabled)")
@@ -633,6 +667,8 @@ def parse_args():
     parser.add_argument("--max-source-length", type=int, default=512)
     parser.add_argument("--max-target-length", type=int, default=512)
     parser.add_argument("--val-split", type=float, default=0.1)
+    parser.add_argument("--augment-gaps", action="store_true", help="Randomly swap gap tokens for augmentation")
+    parser.add_argument("--reverse-task-ratio", type=float, default=0.0, help="Ratio of reverse (en->akk) examples (0-1)")
 
     parser.add_argument("--num-beams", type=int, default=1, help="Beam count for intermediate evals (1=greedy)")
     parser.add_argument("--final-num-beams", type=int, default=4, help="Beam count for final epoch eval")
@@ -662,6 +698,7 @@ def main():
         encoder_lr_multiplier=args.encoder_lr_mult,
         decoder_lr_multiplier=args.decoder_lr_mult,
         label_smoothing=args.label_smoothing,
+        dropout_rate=args.dropout,
         optimizer=args.optimizer,
         weight_decay=args.weight_decay,
         patience=args.patience,
@@ -669,6 +706,8 @@ def main():
         max_source_length=args.max_source_length,
         max_target_length=args.max_target_length,
         val_split=args.val_split,
+        augment_gaps=args.augment_gaps,
+        reverse_task_ratio=args.reverse_task_ratio,
         num_beams=args.num_beams,
         final_num_beams=args.final_num_beams,
         eval_every=args.eval_every,

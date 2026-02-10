@@ -39,6 +39,58 @@ Applying base-model winning hyperparams to byt5-large was hugely effective:
 
 ---
 
+## 2026-02-07: Experiment Suite on byt5-base (12 experiments planned)
+
+### Goal
+Run systematic experiments on byt5-base to find additional improvements before scaling to larger models.
+
+### Current Status
+- **Baseline**: combined_winners (byt5-base) GeomMean 15.32
+- **Best overall**: byt5_large_longer GeomMean 19.00
+
+### Completed Experiments (Priority 1: Context Length Sweep)
+
+**PR #18 created:** https://github.com/tnguyen21/deep-past-challenge/pull/18
+
+1. **context_768** - ✅ BEST
+   - GeomMean: **15.41** (BLEU 10.08, chrF++ 23.56)
+   - **vs baseline (15.32): +0.09 (+0.6%)**
+   - Runtime: 2.7 hours
+
+2. **context_1024** - ✅ COMPLETED
+   - GeomMean: 15.39 (BLEU 10.08, chrF++ 23.50)
+   - **vs baseline (15.32): +0.07 (+0.5%)**
+   - Runtime: 4.2 hours
+   - Conclusion: 768 is the sweet spot
+
+### Key Finding
+**Optimal context length: 768** - provides best balance of performance and efficiency. Recommend using 768 for future experiments.
+
+### Code Changes Complete ✓
+All experiment branches created and pushed:
+1. ✓ exp/context-length-sweep (in progress)
+2. ✓ exp/dropout-tuning (code ready)
+3. ✓ exp/gap-augmentation (code ready)
+4. ✓ exp/enhanced-lexicon (script ready)
+5. ✓ exp/discriminative-lr (code ready)
+6. ✓ exp/reverse-translation (code ready)
+
+### Planned Experiments (Priority Order)
+1. ✓ Context length sweep: 768, 1024 (Priority 1) - IN PROGRESS
+2. ✓ Dropout tuning: 0.1, 0.2, 0.3 (Priority 2) - CODE READY
+3. ✓ Gap augmentation: random swap <gap>/<big_gap> (Priority 3) - CODE READY
+4. ✓ Enhanced lexicon: 30%, 50% mix ratios (Priority 4) - CODE READY
+5. ✓ Discriminative LR: encoder/decoder different rates (Priority 5) - CODE READY
+6. ✓ Reverse translation: 20% en→akk examples (Priority 6) - CODE READY
+
+### Next Steps After context_768 Completes
+1. Log results to experiments/log.jsonl ON THIS BRANCH
+2. Start context_1024 experiment
+3. After both complete, create PR with results
+4. Move to Priority 2 (dropout tuning)
+
+---
+
 ## 2026-02-04: Initial Setup
 
 ### byt5_large_long - NEW BEST! ✓
